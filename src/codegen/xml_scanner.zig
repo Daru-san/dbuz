@@ -33,11 +33,11 @@ pub fn main(init: std.process.Init) !void {
 
     if (xml_src == null or dest == null or passed_name == null) return error.RequiredArgMissing;
     const xmlfile = try Io.Dir.openFileAbsolute(io, xml_src.?, .{});
-    defer xmlfile.close();
+    defer xmlfile.close(io);
 
     var buffspace: [4096*2]u8 = undefined;
 
-    var rd = xmlfile.reader(&buffspace);
+    var rd = xmlfile.reader(io, &buffspace);
     _ = try rd.interface.discardDelimiterInclusive('\n');
 
     const owned_doc = try xml.Populate(Document).initFromReader(gpa, &rd.interface);
@@ -343,9 +343,9 @@ pub fn main(init: std.process.Init) !void {
     }
 
     const outfile = try Io.Dir.createFileAbsolute(io, dest.?, .{});
-    defer outfile.close();
+    defer outfile.close(io);
 
-    var outwriter = outfile.writer(&.{});
+    var outwriter = outfile.writer(io, &.{});
     const ow = &outwriter.interface;
 
     try ow.writeAll(proxyfile.written());
