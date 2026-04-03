@@ -11,6 +11,7 @@ const typehint_name = "dev.rvvm.dbuz.TypeHint";
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
+    const io = init.io;
 
     var xml_src: ?[]const u8 = null;
     var dest: ?[]const u8 = null;
@@ -31,7 +32,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (xml_src == null or dest == null or passed_name == null) return error.RequiredArgMissing;
-    const xmlfile = try fs.openFileAbsolute(xml_src.?, .{});
+    const xmlfile = try Io.Dir.openFileAbsolute(io, xml_src.?, .{});
     defer xmlfile.close();
 
     var buffspace: [4096*2]u8 = undefined;
@@ -341,7 +342,7 @@ pub fn main(init: std.process.Init) !void {
         try writer.print("}}\n", .{});
     }
 
-    const outfile = try fs.createFileAbsolute(dest.?, .{});
+    const outfile = try Io.Dir.createFileAbsolute(io, dest.?, .{});
     defer outfile.close();
 
     var outwriter = outfile.writer(&.{});
@@ -372,7 +373,7 @@ fn writeDBusType(signature: []const u8, writer: *Io.Writer) !void {
             't' => try writer.print("u64", .{}),
 
             'd' => try writer.print("f64", .{}),
-            'h' => try writer.print("std.fs.File", .{}),
+            'h' => try writer.print("std.Io.File", .{}),
             's' => try writer.print("dbuz.types.String", .{}),
             'o' => try writer.print("dbuz.types.ObjectPath", .{}),
             'g' => try writer.print("dbuz.types.Signature", .{}),
