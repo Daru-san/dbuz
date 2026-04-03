@@ -9,18 +9,15 @@ const proc = std.process;
 const assert = std.debug.assert;
 const typehint_name = "dev.rvvm.dbuz.TypeHint";
 
-const gpa = general_purpose_allocator.allocator();
-var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{}){};
-
-pub fn main() !void {
-    defer assert(general_purpose_allocator.deinit() == .ok);
+pub fn main(init: std.process.Init) !void {
+    const gpa = init.gpa;
 
     var xml_src: ?[]const u8 = null;
     var dest: ?[]const u8 = null;
     var passed_name: ?[]const u8 = null;
     var native_types_mod: ?[]const u8 = null;
 
-    var args = proc.args();
+    var args = init.minimal.args.iterate();
     while (args.next()) |arg| {
         if (mem.eql(u8, arg, "-i")) {
             xml_src = args.next() orelse return error.ArgMissing;
