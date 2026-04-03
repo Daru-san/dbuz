@@ -350,7 +350,7 @@ pub fn SignalProxy(comptime T: type) type {
             }
         };
     }
-    const fnSig = @Type(.{
+    const fnSig = @TypeOf(.{
         .@"fn" = .{
             .calling_convention = .auto,
             .is_generic = false,
@@ -707,7 +707,7 @@ pub fn PropertiesStorage(comptime T: type) struct {type, type, type} {
         }
     };
 
-    const TypeEnum = @Type(.{
+    const TypeEnum = @TypeOf(.{
         .@"enum" = .{
             .decls = &.{},
             .fields = type_enum_fields,
@@ -715,7 +715,7 @@ pub fn PropertiesStorage(comptime T: type) struct {type, type, type} {
             .tag_type = u32,
         }
     });
-    const TypeUnion = @Type(.{
+    const TypeUnion = @TypeOf(.{
         .@"union" = .{
             .decls = &.{},
             .fields = type_union_fields,
@@ -723,7 +723,7 @@ pub fn PropertiesStorage(comptime T: type) struct {type, type, type} {
             .layout = .auto,
         }
     });
-    const NameEnum = @Type(.{
+    const NameEnum = @TypeOf(.{
         .@"enum" = .{
             .decls = &.{},
             .fields = name_enum_fields,
@@ -732,7 +732,7 @@ pub fn PropertiesStorage(comptime T: type) struct {type, type, type} {
         }
     });
 
-    return .{@Type(.{
+    return .{@TypeOf(.{
         .@"struct" = .{
             .decls = &.{},
             .fields = struct_fields,
@@ -764,7 +764,7 @@ pub fn SignalListener(comptime T: type) type {
             .is_generic = false,
         } };
 
-        const SigFn = @Type(.{
+        const SigFn = @TypeOf(.{
             .@"fn" = .{
                 .calling_convention = .auto,
                 .is_generic = false,
@@ -790,7 +790,7 @@ pub fn SignalListener(comptime T: type) type {
         .default_value_ptr = null,
         .is_comptime = false
     } };
-    return @Type(.{
+    return @TypeOf(.{
         .@"struct" = .{
             .backing_integer = null,
             .decls = &.{},
@@ -950,7 +950,7 @@ pub fn Variant(comptime types: []const type) type {
         added_signatures = added_signatures ++ .{ signature };
     }
 
-    const TypeEnum = @Type(.{
+    const TypeEnum = @TypeOf(.{
         .@"enum" = .{
             .fields = variant_enum_fields,
             .decls = &.{},
@@ -958,7 +958,7 @@ pub fn Variant(comptime types: []const type) type {
             .tag_type = u32,
         }
     });
-    return @Type(.{
+    return @TypeOf(.{
         .@"union" = .{
             .decls = &.{},
             .fields = variant_union_fields,

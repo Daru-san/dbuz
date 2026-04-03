@@ -62,14 +62,12 @@ pub fn AutoInterface(comptime T: type, comptime desc: ?*const []const u8) type {
         enum_names = enum_names ++ .{ BuiltinType.EnumField{ .name = signal_name, .value = i } };
     }
 
-    const SignalNamesT = @Type(.{
-        .@"enum" = .{
-            .fields = enum_names,
-            .decls = &.{},
-            .is_exhaustive = true,
-            .tag_type = u32,
-        }
-    });
+    const SignalNamesT = @TypeOf(.{ .@"enum" = .{
+        .fields = enum_names,
+        .decls = &.{},
+        .is_exhaustive = true,
+        .tag_type = u32,
+    } });
 
     const Impl = struct {
         const Template = T;
