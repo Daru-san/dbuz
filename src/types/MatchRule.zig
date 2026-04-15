@@ -1,4 +1,3 @@
-
 /// Represents MatchRule that can be used to filter out DBus messages. In real usecase is prerequisite for receiving remote's signals
 const MatchRule = @This();
 
@@ -6,10 +5,9 @@ const std = @import("std");
 const mem = std.mem;
 const Io = std.Io;
 
-const trie = @import("../tree.zig");
-const dbuz = @import("../dbuz.zig");
-
-const Message = dbuz.types.Message;
+const tree = @import("../tree.zig");
+const dbus_types = @import("dbus_types.zig");
+const Message = @import("Message.zig");
 
 member: ?[]const u8 = null,
 interface: ?[]const u8 = null,
@@ -28,13 +26,13 @@ pub fn string(m: *const MatchRule, gpa: mem.Allocator) ![]const u8 {
     defer aw.deinit();
 
     try w.print("type='{s}'", .{@tagName(m.type)});
-    if (m.interface)   |interface| try w.print(",interface='{s}'", .{interface});
-    if (m.member)      |member| try w.print(",member='{s}'", .{member});
-    if (m.sender)      |sender| try w.print(",sender='{s}'", .{sender});
+    if (m.interface) |interface| try w.print(",interface='{s}'", .{interface});
+    if (m.member) |member| try w.print(",member='{s}'", .{member});
+    if (m.sender) |sender| try w.print(",sender='{s}'", .{sender});
     if (m.destination) |destination| try w.print(",destination='{s}'", .{destination});
-    if (m.path)        |path| try w.print(",path='{s}'", .{path});
-    if (m.args)        |args| {
-        for (args, 0..) |arg, i| if (arg != null) try w.print(",arg{}='{s}'", .{i, arg.?}) else {};
+    if (m.path) |path| try w.print(",path='{s}'", .{path});
+    if (m.args) |args| {
+        for (args, 0..) |arg, i| if (arg != null) try w.print(",arg{}='{s}'", .{ i, arg.? }) else {};
     }
 
     if (m.path_namespace) |path_ns| try w.print(",path_namespace='{s}'", .{path_ns});
@@ -57,7 +55,7 @@ pub fn match(r: *const MatchRule, m: *Message) bool {
         for (args) |arg| {
             if (arg == null) continue;
 
-            const str = reader.read(dbuz.types.String, m.allocator) catch return false;
+            const str = reader.read(dbus_types.String, m.allocator) catch return false;
             defer m.allocator.free(str.value);
 
             if (!std.mem.eql(u8, str.value, arg.?)) return false;
@@ -68,13 +66,13 @@ pub fn match(r: *const MatchRule, m: *Message) bool {
         var scratchbuf: [4096]u8 = undefined;
         var sballoc = std.heap.FixedBufferAllocator.init(&scratchbuf);
 
-        const namespace = trie.runtimeKey(path_ns, sballoc.allocator()) catch unreachable;
-        const path = trie.runtimeKey(m.fields.path orelse return false, sballoc.allocator()) catch return false;
+        const namespace = tree.runtimeKey(path_ns, sballoc.allocator()) catch unreachable;
+        const path = tree.runtimeKey(m.fields.path orelse return false, sballoc.allocator()) catch return false;
         if (namespace.len > path.len) return false;
 
         for (namespace, 0..) |part, i| {
             if (!mem.eql(u8, part, path[i])) return false;
-        } 
+        }
     }
 
     return true;
@@ -95,14 +93,13 @@ pub fn isSubsetOf(r: *const MatchRule, other: MatchRule) bool {
         var scratchbuf: [4096]u8 = undefined;
         var sballoc = std.heap.FixedBufferAllocator.init(&scratchbuf);
 
-        const namespace = trie.runtimeKey(path_ns, sballoc.allocator()) catch unreachable;
-        const own_namespace = trie.runtimeKey(r.path_namespace orelse return false, sballoc.allocator()) catch return false;
+        const namespace = tree.runtimeKey(path_ns, sballoc.allocator()) catch unreachable;
+        const own_namespace = tree.runtimeKey(r.path_namespace orelse return false, sballoc.allocator()) catch return false;
         if (namespace.len > own_namespace.len) return false;
 
         for (namespace, 0..) |part, i| {
             if (!mem.eql(u8, part, own_namespace[i])) return false;
         }
-
     }
 
     return true;

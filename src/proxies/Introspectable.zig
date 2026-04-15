@@ -3,18 +3,18 @@ const Introspectable = @This();
 
 const std = @import("std");
 const xml = @import("dishwasher");
-const dbuz = @import("../dbuz.zig");
+const zbus = @import("../zbus.zig");
 
-const Connection = dbuz.types.Connection;
-const Proxy = dbuz.types.Proxy;
-const Promise = dbuz.types.Promise;
-const DBusError = dbuz.types.DBusError;
-const Message = dbuz.types.Message;
+const Connection = zbus.types.Connection;
+const Proxy = zbus.types.Proxy;
+const Promise = zbus.types.Promise;
+const DBusError = zbus.types.DBusError;
+const Message = zbus.types.Message;
 
 const interface_name = "org.freedesktop.DBus.Introspectable";
 
 const Introspection = xml.Populate(Document);
-pub const IntrospectionError = error {ParsingFailed} || DBusError;
+pub const IntrospectionError = error{ParsingFailed} || DBusError;
 
 pub const Node = struct {
     pub const xml_shape = .{
@@ -33,7 +33,6 @@ pub const Node = struct {
         }
         return false;
     }
-
 };
 
 pub const Method = struct {
@@ -103,10 +102,7 @@ const Interface = struct {
 };
 
 const Annotation = struct {
-    pub const xml_shape = .{
-        .name = .{ .attribute, "name" },
-        .value = .{ .attribute, "value" }
-    };
+    pub const xml_shape = .{ .name = .{ .attribute, "name" }, .value = .{ .attribute, "value" } };
 
     name: []const u8,
     value: []const u8,
@@ -126,30 +122,32 @@ pub const OwnedIntrospection = struct {
     doc: Document,
     arena: std.heap.ArenaAllocator,
 
-    pub fn fromDBus(gpa: std.mem.Allocator, r: *dbuz.codec.Reader) !OwnedIntrospection {
+    pub fn fromDBus(gpa: std.mem.Allocator, r: *zbus.codec.Reader) !OwnedIntrospection {
         var res: OwnedIntrospection = undefined;
 
-        const xml_data = try r.read(dbuz.types.String, gpa);
+        const xml_data = try r.read(zbus.types.String, gpa);
         const offset = if (std.mem.startsWith(u8, xml_data.value, "<!DOCTYPE")) std.mem.indexOfScalar(u8, xml_data.value, '>').? + 1 else 0;
 
-        res.arena = Introspection.fromSlice(gpa, xml_data.value[offset..], &res.doc) catch |err| return switch (err) { error.OutOfMemory => err, else => return error.ParsingFailed};
+        res.arena = Introspection.fromSlice(gpa, xml_data.value[offset..], &res.doc) catch |err| return switch (err) {
+            error.OutOfMemory => err,
+            else => return error.ParsingFailed,
+        };
 
         return res;
     }
-
 };
 
-pub fn IntrospectRaw(c: *Connection, gpa: std.mem.Allocator, dest: []const u8, path: []const u8) !*Promise(dbuz.types.String, DBusError) {
+pub fn IntrospectRaw(c: *Connection, gpa: std.mem.Allocator, dest: []const u8, path: []const u8) !*Promise(zbus.types.String, DBusError) {
     var request = try c.startMessage(gpa);
     defer request.deinit();
 
     request.type = .method_call;
     _ = request.setDestination(dest)
-               .setInterface(interface_name)
-               .setPath(path)
-               .setMember("Introspect");
+        .setInterface(interface_name)
+        .setPath(path)
+        .setMember("Introspect");
 
-    const promise = try c.trackResponse(request, dbuz.types.String, DBusError);
+    const promise = try c.trackResponse(request, zbus.types.String, DBusError);
     errdefer if (promise.release() == 1) promise.destroy();
 
     try c.sendMessage(&request);
@@ -167,9 +165,9 @@ pub fn Introspect(
 
     request.type = .method_call;
     _ = request.setDestination(dest)
-               .setInterface(interface_name)
-               .setPath(path)
-               .setMember("Introspect");
+        .setInterface(interface_name)
+        .setPath(path)
+        .setMember("Introspect");
 
     const promise = try c.trackResponse(request, OwnedIntrospection, IntrospectionError);
     errdefer if (promise.release() == 1) promise.destroy();

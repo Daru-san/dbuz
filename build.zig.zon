@@ -1,12 +1,17 @@
 .{
-    .name = .dbuz,
-    .version = "0.0.2",
-    .fingerprint = 0x3ccbb597e5563b86, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.15.2",
-
+    .name = .zbus,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .fingerprint = 0xf5d12d9f6b6a86e6,
     .dependencies = .{
-        .dishwasher = .{ .url = "git+https://github.com/edqx/dishwasher.git#14a17bb2ea1b53ac89f4bc914d8ba4c00ee1b310", .hash = "dishwasher-2.0.0-aXVByTarAQCojk7aaxm436BqTMK13D-Ba6Z05klAIjsr" },
+        .dishwasher = .{
+            .url = "https://github.com/edqx/dishwasher/archive/refs/heads/master.zip",
+            .hash = "dishwasher-2.0.0-aXVByZyrAQApDLVb6eVdAvh2_kG_zokxdGGxlXdxwsDy",
+        },
     },
-
-    .paths = .{ "build.zig", "build.zig.zon", "src", "check.zig" },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
 }

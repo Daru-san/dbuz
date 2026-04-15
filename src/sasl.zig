@@ -1,103 +1,85 @@
+//! SASL EXTERNAL authentication.
+//! Operates directly over std.Io.Reader / std.Io.Writer.
+
 const std = @import("std");
 const mem = std.mem;
-const Io = std.Io;
 const posix = std.posix;
-const net = std.net;
+const Io = std.Io;
 
-const transport = @import("transport.zig");
+const logger = std.log.scoped(.zbus_sasl);
 
-const logger = std.log.scoped(.auth);
+pub const Error = error{
+    MechanismRejected,
+    UnexpectedResponse,
+    UnixFdNegotiationFailed,
+} || Io.Reader.Error || Io.Writer.Error;
 
-pub const AuthClient = struct {
-    mechanism: enum {
-        External,
-        Unknown,
-    } = .External,
+/// Performs SASL EXTERNAL + NEGOTIATE_UNIX_FD over `r` / `w`.
+///
+/// Sends:
+///   \0AUTH EXTERNAL <hex-uid>\r\n
+///   DATA\r\n
+///   NEGOTIATE_UNIX_FD\r\n
+///
+/// Then reads lines until it gets AGREE_UNIX_FD (or ERROR) and sends BEGIN.
+pub fn authenticate(r: *Io.Reader, w: *Io.Writer) !void {
+    var uid_hex_buf: [32]u8 = undefined;
+    const uid_hex = std.fmt.bufPrint(
+        &uid_hex_buf,
+        "{x}",
+        .{std.os.linux.getuid()},
+    ) catch unreachable;
 
-    state: enum {
-        MechanismSelection,
-        DataResponse,
-        UnixFDResponse
-    },
+    // All three lines in one logical write to avoid partial sends.
+    try w.writeAll("\x00AUTH EXTERNAL ");
+    try w.writeAll(uid_hex);
+    try w.writeAll("\r\nDATA\r\nNEGOTIATE_UNIX_FD\r\n");
+    try w.flush();
 
-    reader: transport.Reader,
-    allocator: mem.Allocator,
+    logger.debug("sasl: sent AUTH EXTERNAL {s}", .{uid_hex});
 
-    handle: posix.fd_t,
+    // State machine
+    const State = enum { mech, data_ok, unix_fd };
+    var state: State = .mech;
 
-    pub fn auth(allocator: mem.Allocator, stream: net.Stream ) !void {
-        var client: AuthClient = .{
-            .state = .MechanismSelection,
-            .reader = try transport.Reader.init(allocator, stream.handle, 4096),
-            .allocator = allocator,
-            .handle = stream.handle,
-        };
-        defer client.reader.deinit();
+    while (true) {
+        // takeDelimiterInclusive returns a slice from the reader's internal
+        // buffer – no allocation needed.
+        const line = try r.takeDelimiterInclusive('\n');
+        const trimmed = mem.trimEnd(u8, line, "\r\n");
+        logger.debug("sasl rx: '{s}'", .{trimmed});
 
-        logger.debug("Authenticating DBus connection at fd {}", .{stream.handle});
-
-        var writer = stream.writer(&.{});
-        const w = &writer.interface;
-
-        const vec: []const []const u8 = &.{
-            "\x00AUTH EXTERNAL\r\n",
-            "DATA\r\n",
-            "NEGOTIATE_UNIX_FD\r\n",
-        };
-
-        logger.debug("Trying AUTH MECHANISM EXTERNAL, with UNIX_FD cap", .{});
-
-        _ = try w.writeVec(vec);
-        const r = &client.reader.interface;
-        
-        while (true) {
-            const line = (try r.takeDelimiter('\n')).?;
-            if (line[line.len - 1] != '\r') return error.InvalidResponse;
-            switch (client.state) {
-                .MechanismSelection => {
-                    if (mem.startsWith(u8, line, "REJECTED")) {
-                        logger.debug("[fd:{}] AUTH MECHANISM EXTERNAL is not supported", .{client.handle});
-                        return error.AuthMechanismNotSupported;
-                    }
-                    else if (mem.startsWith(u8, line, "DATA")) {
-                        client.state = .DataResponse;
-                    } else {
-                        logger.debug("[fd:{}] Mechanism selection phase failed.", .{client.handle});
-                        return error.InvalidResponse;
-                    }
-                },
-                .DataResponse => {
-                    if (mem.startsWith(u8, line, "OK")) {
-                        logger.debug("[fd:{}] Authenticated successfully!", .{client.handle});
-                        client.state = .UnixFDResponse;
-                    } else {
-                        logger.debug("[fd:{}] Data response phase failed.", .{client.handle});
-                        return error.InvalidResponse;
-                    }
-                },
-                .UnixFDResponse => {
-                    if (mem.startsWith(u8, line, "AGREE_UNIX_FD")) {
-                        logger.debug("[fd:{}] Negotiated Unix FDs passthrough support.", .{client.handle});
-                        _ = try w.write("BEGIN\r\n");
-                        return;
-                    } else {
-                        logger.debug("[fd:{}] Unix FDs passthrough support negotiation failed.", .{client.handle});
-                        return error.UnixFDNotSupported;
-                    }
+        switch (state) {
+            .mech => {
+                if (mem.startsWith(u8, trimmed, "REJECTED"))
+                    return error.MechanismRejected;
+                if (mem.startsWith(u8, trimmed, "DATA")) {
+                    state = .data_ok;
+                } else if (mem.startsWith(u8, trimmed, "OK")) {
+                    // Some daemons skip the DATA challenge and send OK directly.
+                    state = .unix_fd;
+                } else {
+                    return error.UnexpectedResponse;
                 }
-            }
+            },
+            .data_ok => {
+                if (mem.startsWith(u8, trimmed, "OK")) {
+                    state = .unix_fd;
+                } else {
+                    return error.UnexpectedResponse;
+                }
+            },
+            .unix_fd => {
+                if (mem.startsWith(u8, trimmed, "AGREE_UNIX_FD") or
+                    mem.startsWith(u8, trimmed, "ERROR"))
+                {
+                    try w.writeAll("BEGIN\r\n");
+                    try w.flush();
+                    logger.debug("sasl: done ({s})", .{trimmed[0..@min(trimmed.len, 13)]});
+                    return;
+                }
+                return error.UnixFdNegotiationFailed;
+            },
         }
     }
-
-
-};
-pub const AuthServer = struct {};
-
-test "SASL AuthClient External Mechanism" {
-    const allocator = std.testing.allocator;
-
-    const stream = try net.connectUnixSocket("/run/user/1000/bus");
-    defer stream.close();
-
-    try AuthClient.auth(allocator, stream);
 }

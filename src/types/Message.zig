@@ -1,19 +1,18 @@
-
-/// Represents DBus Message.
-const Message = @This();
-
 const std = @import("std");
 const mem = std.mem;
 const Io = std.Io;
 const posix = std.posix;
 
+const codec = @import("../codec.zig");
+const dbus_types = @import("dbus_types.zig");
+
+/// Represents DBus Message.
+const Message = @This();
+
 const logger = std.log.scoped(.Message);
 
-const dbuz = @import("../dbuz.zig");
-const codec = dbuz.codec;
-
-/// Message type according to DBus specifications 
-pub const Type = enum (u8) {
+/// Message type according to DBus specifications
+pub const Type = enum(u8) {
     invalid = 0,
     method_call = 1,
     method_response = 2,
@@ -158,12 +157,12 @@ pub fn initReading(allocator: mem.Allocator, r: *Io.Reader, fds_source: ?*std.Ar
 
     const HeaderType = union(enum) {
         u32: u32,
-        string: dbuz.types.String,
-        object_path: dbuz.types.ObjectPath,
-        signature: dbuz.types.Signature,
+        string: dbus_types.String,
+        object_path: dbus_types.ObjectPath,
+        signature: dbus_types.Signature,
     };
 
-    const HeadersDict = std.AutoArrayHashMap(u8, HeaderType);
+    const HeadersDict = std.AutoHashMap(u8, HeaderType);
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -231,8 +230,7 @@ pub fn initReading(allocator: mem.Allocator, r: *Io.Reader, fds_source: ?*std.Ar
 
     try sreader.alignReader(8);
     _ = m.continueReading() catch |err| {
-        if (err != error.EndOfStream) return m
-        else return error.EndOfStream;
+        if (err != error.EndOfStream) return m else return error.EndOfStream;
     };
     return m;
 }
@@ -304,12 +302,12 @@ pub fn write(self: *Message, w: *Io.Writer, fw: ?*[]const i32) !void {
 
             const HeaderType = union(enum) {
                 u32: u32,
-                string: dbuz.types.String,
-                object_path: dbuz.types.ObjectPath,
-                signature: dbuz.types.Signature,
+                string: dbus_types.String,
+                object_path: dbus_types.ObjectPath,
+                signature: dbus_types.Signature,
             };
 
-            const HeadersDict = std.AutoArrayHashMap(u8, HeaderType);
+            const HeadersDict = std.AutoHashMap(u8, HeaderType);
 
             var headers = HeadersDict.init(self.allocator);
             defer headers.deinit();
@@ -348,8 +346,7 @@ pub fn write(self: *Message, w: *Io.Writer, fw: ?*[]const i32) !void {
 
             if (self.body.fdlist) |fdlist| {
                 if (fdlist.items.len > 0) {
-                    if (fw == null) return error.UnixFdsButNoSink
-                    else {
+                    if (fw == null) return error.UnixFdsButNoSink else {
                         try headers.put(9, .{ .u32 = @truncate(fdlist.items.len) });
                         fw.?.* = fdlist.items[0..];
                     }
@@ -370,27 +367,18 @@ pub fn estimatedSize(self: *const Message) u32 {
     // _ = self;
     // return 1024;
     return 16 // Header size
-    + if (self.fields.path) |path| 1 + 1 + 4 + @as(u32, @truncate(mem.alignForward(usize, path.len, 8) + 1)) else 0 
-    + if (self.fields.interface) |interface| 1 + 1 + 4 + @as(u32, @truncate(mem.alignForward(usize, interface.len, 8) + 1)) else 0
-    + if (self.fields.member) |member| 1 + 1 + 4 + @as(u32, @truncate(mem.alignForward(usize, member.len, 8) + 1)) else 0
-    + if (self.fields.error_name) |error_name| 1 + 1 + 4 + @as(u32, @truncate(mem.alignForward(usize, error_name.len, 8) + 1)) else 0
-    + if (self.fields.reply_serial) |_| 1 + 1 + 4 else 0
-    + if (self.fields.destination) |destination| 1 + 1 + 4 + @as(u32, @truncate(mem.alignForward(usize, destination.len, 8) + 1)) else 0
-    + if (self.fields.sender) |sender| 1 + 1 + 4 + @as(u32, @truncate(mem.alignForward(usize, sender.len, 8) + 1)) else 0
-    + if (self.fields.signature) |signature| 1 + 1 + 4 + @as(u32, @truncate(mem.alignForward(usize, signature.len, 8) + 1)) else 0
-    + if (self.fields.unix_fd_amount > 0) 1 + 1 + 4 else 0
-    + @as(u32, @truncate(mem.alignForward(usize, switch (self.body.op) {
-                                            .read => self.body.op.read.buffer.items.len,
-                                            .write => self.body.op.write.base.writer.buffered().len,
-                                        }, 8)));
+    + if (self.fields.path) |path| 1 + 1 + 4 + @as(u32, @truncate(mem.alignForward(usize, path.len, 8) + 1)) else 0 + if (self.fields.interface) |interface| 1 + 1 + 4 + @as(u32, @truncate(mem.alignForward(usize, interface.len, 8) + 1)) else 0 + if (self.fields.member) |member| 1 + 1 + 4 + @as(u32, @truncate(mem.alignForward(usize, member.len, 8) + 1)) else 0 + if (self.fields.error_name) |error_name| 1 + 1 + 4 + @as(u32, @truncate(mem.alignForward(usize, error_name.len, 8) + 1)) else 0 + if (self.fields.reply_serial) |_| 1 + 1 + 4 else 0 + if (self.fields.destination) |destination| 1 + 1 + 4 + @as(u32, @truncate(mem.alignForward(usize, destination.len, 8) + 1)) else 0 + if (self.fields.sender) |sender| 1 + 1 + 4 + @as(u32, @truncate(mem.alignForward(usize, sender.len, 8) + 1)) else 0 + if (self.fields.signature) |signature| 1 + 1 + 4 + @as(u32, @truncate(mem.alignForward(usize, signature.len, 8) + 1)) else 0 + if (self.fields.unix_fd_amount > 0) 1 + 1 + 4 else 0 + @as(u32, @truncate(mem.alignForward(usize, switch (self.body.op) {
+        .read => self.body.op.read.buffer.items.len,
+        .write => self.body.op.write.base.writer.buffered().len,
+    }, 8)));
 }
 
-pub fn deinit(self: *Message) void { 
+pub fn deinit(self: *Message) void {
     switch (self.body.op) {
         .read => {
             if (self.body.fdlist) |fdlist| {
                 for (fdlist.items) |fd| {
-                    posix.close(fd);
+                    _ = std.os.linux.close(fd);
                 }
             }
             self.body.op.read.buffer.deinit(self.allocator);

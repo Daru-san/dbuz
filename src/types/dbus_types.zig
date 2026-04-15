@@ -1,4 +1,3 @@
-const std = @import("std");
 // const DBusIntrospectable = @import("../interfaces/DBusIntrospectable.zig");
 // const DBusMessage = @import("DBusMessage.zig");
 
@@ -38,8 +37,7 @@ pub fn deinitValueRecursive(allocator: std.mem.Allocator, value: anytype) void {
                 if (comptime isDict(T)) {
                     const unmanaged = &value.unmanaged;
                     @constCast(unmanaged).deinit(value.allocator);
-                } else
-                if (comptime isFileHandle(T)) {
+                } else if (comptime isFileHandle(T)) {
                     std.posix.close(value.handle);
                 } else inline for (st.fields) |field| {
                     deinitValueRecursive(allocator, @field(value, field.name));
@@ -57,11 +55,12 @@ pub fn deinitValueRecursive(allocator: std.mem.Allocator, value: anytype) void {
     }
 }
 
-/// Check if type T can be serialized using dbuz.
+/// Check if type T can be serialized using zbus.
 pub inline fn isTypeSerializable(comptime T: type) bool {
     const typeinfo = @typeInfo(T);
     return switch (typeinfo) {
         else => false,
+        .void => true,
         .bool => true,
         .int => |intinfo| if (intinfo.bits > 64) false else true,
         .float => |floatinfo| if (floatinfo.bits > 64) false else true,
@@ -70,8 +69,7 @@ pub inline fn isTypeSerializable(comptime T: type) bool {
             break :blk isTypeSerializable(pointerinfo.child);
         },
         .@"struct" => |structinfo| blk: {
-            if (std.meta.hasMethod(T, "toDBus")) break :blk true
-            else if (isDict(T)) return guessSignature(T).len != 0;
+            if (std.meta.hasMethod(T, "toDBus")) break :blk true else if (isDict(T)) return guessSignature(T).len != 0;
             for (structinfo.fields) |field| {
                 if (!isTypeSerializable(field.type)) break :blk false;
             }
@@ -92,6 +90,7 @@ pub inline fn isTypeDeserializable(comptime T: type) bool {
     const typeinfo = @typeInfo(T);
     return switch (typeinfo) {
         else => false,
+        .void => true,
         .bool => true,
         .int => |intinfo| if (intinfo.bits > 64) false else true,
         .float => |floatinfo| if (floatinfo.bits > 64) false else true,
@@ -100,8 +99,7 @@ pub inline fn isTypeDeserializable(comptime T: type) bool {
             break :blk isTypeSerializable(pointerinfo.child);
         },
         .@"struct" => |structinfo| blk: {
-            if (std.meta.hasMethod(T, "fromDBus")) break :blk true
-            else if (isDict(T)) return guessSignature(T).len != 0;
+            if (std.meta.hasMethod(T, "fromDBus")) break :blk true else if (isDict(T)) return guessSignature(T).len != 0;
             for (structinfo.fields) |field| {
                 if (!isTypeSerializable(field.type)) break :blk false;
             }
@@ -237,7 +235,7 @@ const PropertyOpts = struct {
 /// Resulting property will reside in AutoInterface's type result, field .properties. with same name as declaration name.
 pub fn Property(comptime T: type, default: ?*const T, comptime opts: PropertyOpts) type {
     if (!isTypeSerializable(T)) @compileError(std.fmt.comptimePrint("Unable to make property type: {s} is not DBus-serializable", .{@typeName(T)}));
-    return packed struct (u0) {
+    return packed struct(u0) {
         pub const @".metadata_DBUZ_PROPERTY" = {};
         pub const Type: type = T;
         pub const default_value: ?*const anyopaque = @ptrCast(default);
@@ -262,33 +260,30 @@ pub fn Method(F: anytype, comptime opts: MethodOpts) type {
     const Fn = @TypeOf(F);
     const fn_info = switch (@typeInfo(Fn)) {
         .@"fn" => |func| func,
-        else => @compileError("Unable to create method from " ++ @typeName(Fn) ++ ": not a function")
+        else => @compileError("Unable to create method from " ++ @typeName(Fn) ++ ": not a function"),
     };
 
     if (fn_info.params.len == 0) @compileError(std.fmt.comptimePrint("Unable to create method from {s}: function must contain at least 1 argument", .{@typeName(Fn)}));
 
     if (opts.argument_names) |anames| {
-        if (anames.len != fn_info.params.len - 1) @compileError(std.fmt.comptimePrint("MethodOpts.argument_names length must be equal to function param count minus one ({} != {})", .{anames.len, fn_info.params.len - 1}));
+        if (anames.len != fn_info.params.len - 1) @compileError(std.fmt.comptimePrint("MethodOpts.argument_names length must be equal to function param count minus one ({} != {})", .{ anames.len, fn_info.params.len - 1 }));
     }
 
     if (opts.argument_types) |atypes| {
-        if (atypes.len != fn_info.params.len - 1) @compileError(std.fmt.comptimePrint("MethodOpts.argument_types length must be equal to function param count minus one ({} != {})", .{atypes.len, fn_info.params.len - 1}));
-
+        if (atypes.len != fn_info.params.len - 1) @compileError(std.fmt.comptimePrint("MethodOpts.argument_types length must be equal to function param count minus one ({} != {})", .{ atypes.len, fn_info.params.len - 1 }));
     }
 
     var read_params: []const type = &.{};
     inline for (fn_info.params[1..], 1..) |param, i| {
         if (param.type.? == *Message or param.type.? == *const Message) continue;
-        if (!isTypeSerializable(param.type.?)) @compileError(std.fmt.comptimePrint("Unable to create method from {s}: parameter {} of type {s} is not DBus-serializable.", .{
-            @typeName(Fn), i, @typeName(param.type.?)
-        }));
+        if (!isTypeSerializable(param.type.?)) @compileError(std.fmt.comptimePrint("Unable to create method from {s}: parameter {} of type {s} is not DBus-serializable.", .{ @typeName(Fn), i, @typeName(param.type.?) }));
         read_params = read_params ++ .{param.type.?};
     }
 
     const param_tuple = std.meta.ArgsTuple(Fn);
     const param_readable_tuple = std.meta.Tuple(read_params);
 
-    return packed struct (u0) {
+    return packed struct(u0) {
         pub const @".metadata_DBUZ_METHOD" = {};
         pub const Signature = param_tuple;
         pub const Arguments = param_readable_tuple;
@@ -309,9 +304,9 @@ const SignalOpts = struct {
 /// Generate signal declaration for Interface.AutoInterface's dbus intorspection and .emit_signal's glue code.
 pub fn Signal(comptime T: type, opts: SignalOpts) type {
     if (!isTypeSerializable(T)) @compileError(@typeName(T) ++ "is not DBus-serializable. Signal must have a serializable signature.");
-    const SignalT = switch(@typeInfo(T)) {
-        .@"struct" => |st| if (st.is_tuple) T else struct {T},
-        else => struct {T}
+    const SignalT = switch (@typeInfo(T)) {
+        .@"struct" => |st| if (st.is_tuple) T else struct { T },
+        else => struct { T },
     };
 
     const sigt_info = @typeInfo(SignalT).@"struct";
@@ -324,7 +319,7 @@ pub fn Signal(comptime T: type, opts: SignalOpts) type {
         if (sigt_info.fields.len != types.len) @compileError("opts.param_types.len != sigt_info.fields.len");
     }
 
-    return packed struct (u0) {
+    return packed struct(u0) {
         pub const @".metadata_DBUZ_SIGNAL" = {};
         pub const Signature = SignalT;
         pub const deprecated = opts.deprecated;
@@ -336,33 +331,29 @@ pub fn Signal(comptime T: type, opts: SignalOpts) type {
 /// Generate type for signal handling. type will have methods .subscribe and .unsubscribe that can be used to attach any callback to remote signal.
 pub fn SignalProxy(comptime T: type) type {
     if (!isTypeSerializable(T)) @compileError(@typeName(T) ++ "is not DBus-serializable. Signal must have a serializable signature.");
-    const SignalT = switch(@typeInfo(T)) {
-        .@"struct" => |st| if (st.is_tuple) T else struct {T},
-        else => struct {T}
+    const SignalT = switch (@typeInfo(T)) {
+        .@"struct" => |st| if (st.is_tuple) T else struct { T },
+        else => struct { T },
     };
     var fn_sig_params: []const std.builtin.Type.Fn.Param = &.{};
-    inline for (TupleFieldTypeSlice(SignalT)) |Type| {
-        fn_sig_params = fn_sig_params ++ .{
-            std.builtin.Type.Fn.Param{
-                .type = Type,
-                .is_generic = false,
-                .is_noalias = false,
-            }
-        };
+    const fn_param_types: []const type = TupleFieldTypeSlice(SignalT);
+    var fn_param_attrs: [fn_param_types.len]std.builtin.Type.Fn.Param.Attributes = &.{};
+    inline for (fn_param_types, 0..) |_, i| {
+        fn_param_attrs[i] = .{ .@"noalias" = false };
     }
-    const fnSig = @TypeOf(.{
-        .@"fn" = .{
-            .calling_convention = .auto,
+    inline for (TupleFieldTypeSlice(SignalT)) |Type| {
+        fn_sig_params = fn_sig_params ++ .{std.builtin.Type.Fn.Param{
+            .type = Type,
             .is_generic = false,
-            .is_var_args = false,
-            .return_type = void,
-            .params = fn_sig_params ++ .{ std.builtin.Type.Fn.Param{
-                .type = ?*anyopaque,
-                .is_generic = false,
-                .is_noalias = false,
-            }},
-        }
+            .is_noalias = false,
+        }};
+    }
+
+    const fnSig = @Fn(&fn_sig_params, &fn_param_attrs, void, .{
+        .varargs = false,
+        .@"callconv" = .auto,
     });
+
     return struct {
         pub const Signature = SignalT;
         pub const FnSignature = fnSig;
@@ -419,12 +410,6 @@ pub fn SignalProxy(comptime T: type) type {
     };
 }
 
-
-const Interface = @import("Interface.zig");
-const Message   = @import("Message.zig");
-
-pub const Dictionary = @import("dict.zig").from;
-
 fn TupleFieldTypeSlice(comptime T: type) []const type {
     if (!@typeInfo(T).@"struct".is_tuple) @compileError("TupleFieldTypeSlice must be only called on tuples.");
     var types: []const type = &.{};
@@ -448,9 +433,7 @@ pub fn introspect(comptime T: type) []const u8 {
             .@"struct" => {},
             else => continue,
         }
-        if      (@hasDecl(f, ".metadata_DBUZ_METHOD"))   xml = xml ++ introspectMethod(decl.name, f)
-        else if (@hasDecl(f, ".metadata_DBUZ_PROPERTY")) xml = xml ++ introspectProperty(decl.name, f)
-        else if (@hasDecl(f, ".metadata_DBUZ_SIGNAL"))   xml = xml ++ introspectSignal(decl.name, f);
+        if (@hasDecl(f, ".metadata_DBUZ_METHOD")) xml = xml ++ introspectMethod(decl.name, f) else if (@hasDecl(f, ".metadata_DBUZ_PROPERTY")) xml = xml ++ introspectProperty(decl.name, f) else if (@hasDecl(f, ".metadata_DBUZ_SIGNAL")) xml = xml ++ introspectSignal(decl.name, f);
     }
     xml = xml ++ "    </interface>\n";
     return xml;
@@ -478,7 +461,7 @@ pub fn introspectMethod(comptime name: []const u8, comptime T: type) []const u8 
     inline for (params_info.fields, 0..) |param, i| {
         const argname = if (param_names) |names| names[i] else std.fmt.comptimePrint("in{}", .{i});
         const argtype = guessSignature(param.type);
-        xml = xml ++ (" " ** 12) ++ std.fmt.comptimePrint("<arg name=\"{s}\" type=\"{s}\" direction=\"in\"/>\n", .{argname, argtype});
+        xml = xml ++ (" " ** 12) ++ std.fmt.comptimePrint("<arg name=\"{s}\" type=\"{s}\" direction=\"in\"/>\n", .{ argname, argtype });
     }
 
     if (param_types) |types| {
@@ -492,7 +475,7 @@ pub fn introspectMethod(comptime name: []const u8, comptime T: type) []const u8 
 
     if (ReturnType != void) {
         const outtype: ?[]const u8 = switch (@typeInfo(ReturnType)) {
-            .@"error_union" => |eu| if (eu.payload == void) null else guessSignature(eu.payload),
+            .error_union => |eu| if (eu.payload == void) null else guessSignature(eu.payload),
             else => guessSignature(ReturnType),
         };
         if (outtype) |outsig| xml = xml ++ (" " ** 12) ++ std.fmt.comptimePrint("<arg name=\"out0\" type=\"{s}\" direction=\"out\"/>\n", .{outsig});
@@ -518,24 +501,37 @@ pub fn introspectProperty(comptime name: []const u8, comptime T: type) []const u
     const has_annotation = T.deprecated != null or T.signal != null;
 
     var annotations: []const u8 = "";
-    if (T.deprecated) |deprecated| annotations += (" " ** 12) ++ std.fmt.comptimePrint("<annotation name=\"org.freedesktop.DBus.Deprecated\" value=\"{}\"/>\n", .{deprecated});
-    if (T.signal) |signal| annotations += (" " ** 12) ++ std.fmt.comptimePrint("<annotation name=\"org.freedesktop.DBus.Property.EmitsChangedSignal\" value=\"{s}\"/>\n", .{@tagName(signal)});
+    if (T.deprecated) |deprecated| {
+        annotations = annotations ++ (" " ** 12) ++ std.fmt.comptimePrint(
+            "<annotation name=\"org.freedesktop.DBus.Deprecated\" value=\"{}\"/>\n",
+            .{deprecated},
+        );
+    }
+    if (T.signal) |signal| {
+        annotations = annotations ++ (" " ** 12) ++ std.fmt.comptimePrint(
+            "<annotation name=\"org.freedesktop.DBus.Property.EmitsChangedSignal\" value=\"{s}\"/>\n",
+            .{@tagName(signal)},
+        );
+    }
 
-    return (" " ** 8) ++ std.fmt.comptimePrint("<property name=\"{s}\" type=\"{s}\" access=\"{s}\"{s}{s}{s}", .{
-        name,
-        proptype,
-        access,
-        if (has_annotation) ">\n" else "/>\n",
-        annotations,
-        if (has_annotation) (" " ** 8) ++ "</property>\n" else ""
-    });
+    return (" " ** 8) ++ std.fmt.comptimePrint(
+        "<property name=\"{s}\" type=\"{s}\" access=\"{s}\"{s}{s}{s}",
+        .{
+            name,
+            proptype,
+            access,
+            if (has_annotation) ">\n" else "/>\n",
+            annotations,
+            if (has_annotation) (" " ** 8) ++ "</property>\n" else "",
+        },
+    );
 }
 
 pub fn introspectSignal(comptime name: []const u8, comptime T: type) []const u8 {
     const SignalT = T.Signature;
     const param_names = T.param_names;
     const param_types = T.param_types;
-    
+
     const sigt_info = @typeInfo(SignalT).@"struct";
 
     if (param_names) |names| {
@@ -546,12 +542,11 @@ pub fn introspectSignal(comptime name: []const u8, comptime T: type) []const u8 
         if (types.len != sigt_info.fields.len) @compileError("types.len != sigt_info.fields.len.");
     }
 
-
     var xml: []const u8 = (" " ** 8) ++ std.fmt.comptimePrint("<signal name=\"{s}\">\n", .{name});
     inline for (sigt_info.fields, 0..) |param, i| {
         const argname = if (param_names) |names| names[i] else std.fmt.comptimePrint("value{}", .{i});
         const argtype = guessSignature(param.type);
-        xml = xml ++ (" " ** 12) ++ std.fmt.comptimePrint("<arg name=\"{s}\" type=\"{s}\"/>\n", .{argname, argtype});
+        xml = xml ++ (" " ** 12) ++ std.fmt.comptimePrint("<arg name=\"{s}\" type=\"{s}\"/>\n", .{ argname, argtype });
     }
 
     if (param_types) |types| {
@@ -568,7 +563,7 @@ pub fn introspectSignal(comptime name: []const u8, comptime T: type) []const u8 
 
 pub inline fn methodList(comptime T: type) []const [:0]const u8 {
     var list: []const [:0]const u8 = &.{};
-    
+
     const template_info = @typeInfo(T);
 
     inline for (template_info.@"struct".decls) |declaration| {
@@ -582,9 +577,7 @@ pub inline fn methodList(comptime T: type) []const [:0]const u8 {
         const FunctionType = @TypeOf(@field(DeclarationType, "fn"));
         const fntype = @typeInfo(FunctionType).@"fn";
 
-        if (fntype.params.len == 0) @compileError(std.fmt.comptimePrint("public method {s}.{s} has empty signature. Interface expects method prototypes contain at least one parameter of type *<const> Interface", .{
-            @typeName(T), declaration.name
-        }));    
+        if (fntype.params.len == 0) @compileError(std.fmt.comptimePrint("public method {s}.{s} has empty signature. Interface expects method prototypes contain at least one parameter of type *<const> Interface", .{ @typeName(T), declaration.name }));
         list = list ++ .{declaration.name};
     }
 
@@ -605,7 +598,7 @@ pub inline fn propertyList(comptime T: type) []const [:0]const u8 {
         if (!@hasDecl(DeclarationType, ".metadata_DBUZ_PROPERTY")) continue;
         const PropertyType = DeclarationType.Type;
 
-        if (!isTypeSerializable(PropertyType)) @compileError(std.fmt.comptimePrint("dbuz property {s}.{s} has unserializable type {s}. Please make sure to NOT construct dbuz properties manually, use dbuz.types.Property helper instead!", .{@typeName(T), declaration.name, @typeName(PropertyType)}));
+        if (!isTypeSerializable(PropertyType)) @compileError(std.fmt.comptimePrint("zbus property {s}.{s} has unserializable type {s}. Please make sure to NOT construct zbus properties manually, use zbus.types.Property helper instead!", .{ @typeName(T), declaration.name, @typeName(PropertyType) }));
 
         list = list ++ .{declaration.name};
     }
@@ -627,7 +620,7 @@ pub inline fn signalList(comptime T: type) []const [:0]const u8 {
         if (!@hasDecl(DeclarationType, ".metadata_DBUZ_SIGNAL")) continue;
         const SignalType = DeclarationType.Signature;
 
-        if (!isTypeSerializable(SignalType)) @compileError(std.fmt.comptimePrint("dbuz signal {s}.{s} has unserializable type {s}. Please make sure to NOT construct dbuz signals manually, use dbuz.types.Signal helper instead!", .{@typeName(T), declaration.name, @typeName(SignalType)}));
+        if (!isTypeSerializable(SignalType)) @compileError(std.fmt.comptimePrint("zbus signal {s}.{s} has unserializable type {s}. Please make sure to NOT construct zbus signals manually, use zbus.types.Signal helper instead!", .{ @typeName(T), declaration.name, @typeName(SignalType) }));
 
         list = list ++ .{declaration.name};
     }
@@ -647,13 +640,22 @@ inline fn sliceContains(comptime T: type, haystack: []const T, needle: T) bool {
     return false;
 }
 
-pub fn PropertiesStorage(comptime T: type) struct {type, type, type} {
+pub fn PropertiesStorage(comptime T: type) struct { type, type, type } {
     const properties = propertyList(T);
 
-    var struct_fields: []const BuiltinType.StructField    = &.{};
-    var type_enum_fields: []const BuiltinType.EnumField   = &.{};
-    var name_enum_fields: []const BuiltinType.EnumField   = &.{};
-    var type_union_fields: []const BuiltinType.UnionField = &.{};
+    var struct_field_names: []const []const u8 = &.{};
+    var struct_field_types: []const type = &.{};
+    var struct_field_attributes: []const BuiltinType.StructField.Attributes = &.{};
+
+    var type_enum_names: []const []const u8 = &.{};
+    var type_enum_values: []const u32 = &.{};
+
+    var name_enum_names: []const []const u8 = &.{};
+    var name_enum_values: []const u32 = &.{};
+
+    var type_union_names: []const []const u8 = &.{};
+    var type_union_types: []const type = &.{};
+    var type_union_attributes: []const BuiltinType.UnionField.Attributes = &.{};
 
     var added_sigs: []const []const u8 = &.{};
 
@@ -661,147 +663,138 @@ pub fn PropertiesStorage(comptime T: type) struct {type, type, type} {
         const Prop = @field(T, property_name);
         const propsig = guessSignature(Prop.Type);
 
-        struct_fields = struct_fields ++ .{ BuiltinType.StructField{
-            .name = property_name,
-            .type = Prop.Type,
-            .alignment = @alignOf(Prop.Type),
-            .default_value_ptr = Prop.default_value,
-            .is_comptime = false,
-        }};
+        struct_field_names = struct_field_names ++ .{property_name};
+        struct_field_types = struct_field_types ++ .{Prop.Type};
+        struct_field_attributes = struct_field_attributes ++ .{
+            BuiltinType.StructField.Attributes{
+                .@"comptime" = false,
+                .@"align" = @alignOf(Prop.Type),
+                .default_value_ptr = Prop.default_value,
+            },
+        };
 
         if (!sliceContains([]const u8, added_sigs, propsig)) {
-            type_enum_fields = type_enum_fields ++ .{ BuiltinType.EnumField{
-                .name = propsig,
-                .value = type_enum_fields.len,
-            }};
-            type_union_fields = type_union_fields ++ .{BuiltinType.UnionField{
-                .name = propsig,
-                .alignment = @alignOf(Prop.Type),
-                .type = Prop.Type,
-            }};
-            added_sigs = added_sigs ++ .{ propsig };
+            type_enum_names = type_enum_names ++ .{propsig};
+            type_enum_values = type_enum_values ++ .{type_enum_values.len};
+
+            type_union_names = type_union_names ++ .{propsig};
+            type_union_types = type_union_types ++ .{Prop.Type};
+            type_union_attributes = type_union_attributes ++ .{
+                BuiltinType.UnionField.Attributes{ .@"align" = @alignOf(Prop.Type) },
+            };
+
+            added_sigs = added_sigs ++ .{propsig};
         }
 
-        name_enum_fields = name_enum_fields ++ .{
-            BuiltinType.EnumField{
-                .name = property_name,
-                .value = i,
-            }
-        };
+        name_enum_names = name_enum_names ++ .{property_name};
+        name_enum_values = name_enum_values ++ .{i};
     }
 
-    struct_fields = struct_fields ++ .{
-        BuiltinType.StructField{
-            .name = "_mutex",
-            .type = std.Thread.Mutex,
-            .alignment = @alignOf(std.Thread.Mutex),
-            .default_value_ptr = &std.Thread.Mutex{},
-            .is_comptime = false,
+    struct_field_names = struct_field_names ++ .{ "_mutex", "_inited" };
+    struct_field_types = struct_field_types ++ .{ std.Io.Mutex, bool };
+    struct_field_attributes = struct_field_attributes ++ .{
+        BuiltinType.StructField.Attributes{
+            .@"align" = @alignOf(std.Io.Mutex),
+            .@"comptime" = false,
+            .default_value_ptr = &std.Io.Mutex.init,
         },
-        BuiltinType.StructField{
-            .name = "_inited",
-            .type = bool,
-            .alignment = @alignOf(bool),
+        BuiltinType.StructField.Attributes{
+            .@"align" = @alignOf(bool),
+            .@"comptime" = false,
             .default_value_ptr = &false,
-            .is_comptime = false,
-        }
+        },
     };
 
-    const TypeEnum = @TypeOf(.{
-        .@"enum" = .{
-            .decls = &.{},
-            .fields = type_enum_fields,
-            .is_exhaustive = true,
-            .tag_type = u32,
-        }
-    });
-    const TypeUnion = @TypeOf(.{
-        .@"union" = .{
-            .decls = &.{},
-            .fields = type_union_fields,
-            .tag_type = TypeEnum,
-            .layout = .auto,
-        }
-    });
-    const NameEnum = @TypeOf(.{
-        .@"enum" = .{
-            .decls = &.{},
-            .fields = name_enum_fields,
-            .tag_type = u32,
-            .is_exhaustive = true,
-        }
-    });
+    const TypeEnum = @Enum(
+        u32,
+        .exhaustive,
+        type_enum_names,
+        type_enum_values[0..type_enum_names.len],
+    );
 
-    return .{@TypeOf(.{
-        .@"struct" = .{
-            .decls = &.{},
-            .fields = struct_fields,
-            .layout = .auto,
-            .is_tuple = false,
-        }
-    }), TypeUnion, NameEnum};
+    const TypeUnion = @Union(
+        .auto,
+        TypeEnum,
+        type_union_names,
+        type_union_types[0..type_union_names.len],
+        type_union_attributes[0..type_union_names.len],
+    );
+
+    const NameEnum = @Enum(
+        u32,
+        .exhaustive,
+        name_enum_names,
+        name_enum_values[0..name_enum_names.len],
+    );
+
+    return .{
+        @Struct(
+            .auto,
+            null,
+            struct_field_names,
+            struct_field_types[0..struct_field_names.len],
+            struct_field_attributes[0..struct_field_names.len],
+        ),
+        TypeUnion,
+        NameEnum,
+    };
 }
 
 pub fn SignalListener(comptime T: type) type {
     const signals = signalList(T);
 
-    var sfields: []const BuiltinType.StructField = &.{};
+    var sfield_names: []const []const u8 = &.{};
+    var sfield_types: []const type = &.{};
+    var sfield_attrs: []const BuiltinType.StructField.Attributes = &.{};
     for (signals) |signame| {
         const S = @field(T, signame);
-        var params: []const BuiltinType.Fn.Param = &.{};
+        var param_types: []const type = &.{};
+        var param_attrs: []const BuiltinType.Fn.Param.Attributes = &.{};
 
         const sig_info = @typeInfo(S.Signature).@"struct";
         for (sig_info.fields) |field| {
-            params = params ++ .{ BuiltinType.Fn.Param{ 
-                .type = field.type,
-                .is_noalias = false,
-                .is_generic = false,
-            } };
+            param_types = param_types ++ .{field.type};
+            param_attrs = param_attrs ++ .{
+                BuiltinType.Fn.Param.Attributes{ .@"noalias" = false },
+            };
         }
-        params = params ++ .{ BuiltinType.Fn.Param{
-            .type = ?*anyopaque,
-            .is_noalias = false,
-            .is_generic = false,
-        } };
+        param_types = param_types ++ .{?*anyopaque};
+        param_attrs = param_attrs ++ .{
+            BuiltinType.Fn.Param.Attributes{ .@"noalias" = false },
+        };
 
-        const SigFn = @TypeOf(.{
-            .@"fn" = .{
-                .calling_convention = .auto,
-                .is_generic = false,
-                .is_var_args = false,
-                .return_type = void,
-                .params = params
-            }
+        const param_attr_slice: *const [param_types.len]BuiltinType.Fn.Param.Attributes = param_attrs[0..param_types.len];
+        const SigFn = @Fn(param_types, param_attr_slice, void, .{
+            .@"callconv" = .auto,
+            .varargs = false,
         });
 
-        sfields = sfields ++ .{ BuiltinType.StructField{
-            .name = signame,
-            .type = ?*const SigFn,
-            .alignment = @alignOf(?*const SigFn),
-            .default_value_ptr = null,
-            .is_comptime = false
-        } };
+        sfield_names = sfield_names ++ .{signame};
+        sfield_types = sfield_types ++ .{?*const SigFn};
+        sfield_attrs = sfield_attrs ++ .{
+            BuiltinType.StructField.Attributes{
+                .@"comptime" = false,
+                .@"align" = @alignOf(?*const SigFn),
+                .default_value_ptr = null,
+            },
+        };
     }
 
-    sfields = sfields ++ .{ BuiltinType.StructField{
-        .name = "userdata",
-        .type = ?*anyopaque,
-        .alignment = @alignOf(?*anyopaque),
-        .default_value_ptr = null,
-        .is_comptime = false
-    } };
-    return @TypeOf(.{
-        .@"struct" = .{
-            .backing_integer = null,
-            .decls = &.{},
-            .fields = sfields,
-            .is_tuple = false,
-            .layout = .auto
-        }
-    });
+    sfield_names = sfield_names ++ .{"userdata"};
+    sfield_types = sfield_types ++ .{?*anyopaque};
+    sfield_attrs = sfield_attrs ++ .{
+        BuiltinType.StructField.Attributes{
+            .@"comptime" = false,
+            .@"align" = @alignOf(?*const ?*anyopaque),
+            .default_value_ptr = null,
+        },
+    };
+    const sfield_types_slice = sfield_types[0..sfield_names.len];
+    const sfield_attrs_slice = sfield_attrs[0..sfield_attrs.len];
+    return @Struct(.auto, null, sfield_names, sfield_types_slice, sfield_attrs_slice);
 }
 
-pub const SignalListenerPersistance = enum (u8) {
+pub const SignalListenerPersistance = enum(u8) {
     Persistent,
     OneShot,
 };
@@ -822,13 +815,13 @@ pub fn SignalManager(comptime T: type) type {
             return .{ .listener = listener };
         }
 
-        pub fn handle(s: *Self, m: *Message, gpa: std.mem.Allocator) error{Unhandled,HandlingFailed}!void {
+        pub fn handle(s: *Self, m: *Message, gpa: std.mem.Allocator) error{ Unhandled, HandlingFailed }!void {
             const r = m.reader() catch return error.HandlingFailed;
             inline for (signals) |signame| {
                 if (!std.mem.eql(u8, m.fields.member.?, signame)) comptime continue;
                 if (@field(s.listener, signame)) |handler| {
                     const v = r.read(@field(T, signame).Signature, gpa) catch return error.HandlingFailed;
-                    const call_params = v ++ .{ s.listener.userdata };
+                    const call_params = v ++ .{s.listener.userdata};
                     return @call(.auto, handler, call_params);
                 }
             }
@@ -893,12 +886,10 @@ pub fn dupeValue(gpa: std.mem.Allocator, v: anytype) !@TypeOf(v) {
                 }
 
                 break :st_blk dict;
-            }
-            else if (comptime isFileHandle(T)) {
+            } else if (comptime isFileHandle(T)) {
                 const handle: T = .{ .handle = try std.posix.dup(v.handle) };
                 break :st_blk handle;
-            }
-            else {
+            } else {
                 var res: T = undefined;
                 var filled_fields: usize = 0;
                 errdefer for (0..filled_fields) |i| deinitValueRecursive(gpa, @field(res, st.fields[i]));
@@ -924,8 +915,13 @@ pub fn dupeValue(gpa: std.mem.Allocator, v: anytype) !@TypeOf(v) {
 
 pub fn Variant(comptime types: []const type) type {
     @setEvalBranchQuota(10000);
-    var variant_enum_fields: []const BuiltinType.EnumField = &.{};
-    var variant_union_fields: []const BuiltinType.UnionField = &.{};
+    var variant_enum_names: []const []const u8 = &.{};
+    var variant_enum_values = &.{};
+
+    var variant_union_names: []const []const u8 = &.{};
+    var variant_union_types: []const type = &.{};
+    var variant_union_attrs: []const BuiltinType.UnionField.Attributes = &.{};
+
     var added_signatures: []const []const u8 = &.{};
 
     for (types) |T| {
@@ -934,38 +930,36 @@ pub fn Variant(comptime types: []const type) type {
 
         if (sliceContains([]const u8, added_signatures, signature)) continue;
 
-        variant_enum_fields = variant_enum_fields ++ .{
-            BuiltinType.EnumField{
-                .name = signature,
-                .value = variant_enum_fields.len,
-            }
-        };
-        variant_union_fields = variant_union_fields ++ .{
-            BuiltinType.UnionField{
-                .name = signature,
-                .type = T,
-                .alignment = @alignOf(T),
-            }
-        };
-        added_signatures = added_signatures ++ .{ signature };
+        variant_enum_names = variant_enum_names ++ .{signature};
+        variant_enum_values = variant_enum_values ++ .{variant_enum_names.len};
+
+        variant_union_names = variant_union_names ++ .{signature};
+        variant_union_types = variant_union_types ++ .{T};
+        variant_union_attrs = variant_union_attrs ++ .{.{
+            .@"align" = @alignOf(T),
+        }};
+        added_signatures = added_signatures ++ .{signature};
     }
 
-    const TypeEnum = @TypeOf(.{
-        .@"enum" = .{
-            .fields = variant_enum_fields,
-            .decls = &.{},
-            .is_exhaustive = true,
-            .tag_type = u32,
-        }
-    });
-    return @TypeOf(.{
-        .@"union" = .{
-            .decls = &.{},
-            .fields = variant_union_fields,
-            .tag_type = TypeEnum,
-            .layout = .auto,
-        }
-    });
+    const TypeEnum = @Enum(
+        u32,
+        .exhaustive,
+        &variant_enum_names,
+        &variant_enum_values,
+    );
+
+    return @Union(
+        .auto,
+        TypeEnum,
+        &variant_union_names,
+        &variant_union_types,
+        &variant_union_attrs,
+    );
 }
 
+const std = @import("std");
 const BuiltinType = std.builtin.Type;
+
+pub const Dictionary = @import("dict.zig").from;
+const Interface = @import("Interface.zig");
+const Message = @import("Message.zig");

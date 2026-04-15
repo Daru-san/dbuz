@@ -1,235 +1,240 @@
+//! Low-level transport using recvmsg/sendmsg for Unix SCM_RIGHTS (FD passing).
+//!
+//! std.Io.net.Stream's readVec path uses readv, which silently drops ancillary
+//! data (SCM_RIGHTS, SCM_CREDENTIALS).  We hold the raw fd and call the POSIX
+//! messaging syscalls ourselves.
+
 const std = @import("std");
 const mem = std.mem;
-const Io = std.Io;
 const posix = std.posix;
-
-const assert = std.debug.assert;
+const Io = std.Io;
 
 const cmsg = @import("cmsg.zig");
 const posixe = @import("posix_extended.zig");
 
-pub const Reader = struct {
-    handle: posix.fd_t,
-    buffer: []u8,
+const logger = std.log.scoped(.zbus_transport);
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Reader
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub const Reader = struct {
+    fd: posix.fd_t,
+    buf: []u8,
     allocator: mem.Allocator,
     interface: Io.Reader,
 
-    control_buffer: [512]u8 align(@alignOf(cmsg.cmsghdr)) = undefined,
-    control_used: bool = false,
+    // 512 bytes can hold >100 SCM_RIGHTS file descriptors.
+    ctrl_buf: [512]u8 align(@alignOf(cmsg.cmsghdr)) = undefined,
+    ctrl_used: bool = false,
 
-    pending_flags: u32 = 0,
-
-    pub fn init(allocator: mem.Allocator, handle: posix.fd_t, buffer_size: usize) !Reader {
-        const buffer = try allocator.alloc(u8, buffer_size);
-        return Reader{
-            .handle = handle,
-            .buffer = buffer,
+    pub fn init(allocator: mem.Allocator, fd: posix.fd_t, buf_size: usize) !Reader {
+        const buf = try allocator.alloc(u8, buf_size);
+        return .{
+            .fd = fd,
+            .buf = buf,
             .allocator = allocator,
             .interface = .{
-                .buffer = buffer,
+                .buffer = buf,
                 .seek = 0,
                 .end = 0,
                 .vtable = &.{
-                    .stream = stream,
-                    .readVec = readVec,
-                }
-            }
+                    .stream = streamImpl,
+                    .readVec = readVecImpl,
+                },
+            },
         };
     }
 
-    fn readVec(io_reader: *Io.Reader, data: [][]u8) Io.Reader.Error!usize {
-        const r: *Reader = @alignCast(@fieldParentPtr("interface", io_reader));
-        if (posixe.has_recvmsg) {
-            var iovecs: [8]posix.iovec = undefined;
-            const dest_n, const data_size = try io_reader.writableVectorPosix(&iovecs, data);
-            const dest = iovecs[0..dest_n];
-            assert(dest[0].len > 0);
-
-            var message_header: posix.msghdr = .{
-                .name = null,
-                .namelen = 0,
-                .iov = dest.ptr,
-                .iovlen = dest_n,
-                .control = @ptrCast(r.control_buffer[0..].ptr),
-                .controllen = r.control_buffer.len,
-                .flags = 0
-            };
-
-            const n: isize = @bitCast(posixe.recvmsg(r.handle, &message_header, 0));
-
-            if (n < 0) return error.ReadFailed;
-            if (n == 0) return error.EndOfStream;
-            r.control_used = message_header.controllen > 0;
-            if (n > data_size) {
-                io_reader.end += @as(usize, @bitCast(n)) - data_size;
-                return data_size;
-            }
-            return @bitCast(n);
-        }
-        @compileError("Target platform don't supported yet");
+    pub fn deinit(self: *Reader) void {
+        self.allocator.free(self.buf);
     }
 
-    fn stream(io_reader: *Io.Reader, io_writer: *Io.Writer, limit: Io.Limit) Io.Reader.StreamError!usize {
-        const dest = limit.slice(try io_writer.writableSliceGreedy(1));
+    // ── Io.Reader vtable ──────────────────────────────────────────────────────
+
+    fn readVecImpl(io_r: *Io.Reader, data: [][]u8) Io.Reader.Error!usize {
+        const r: *Reader = @alignCast(@fieldParentPtr("interface", io_r));
+        return r.doRecv(data);
+    }
+
+    fn streamImpl(io_r: *Io.Reader, io_w: *Io.Writer, limit: Io.Limit) Io.Reader.StreamError!usize {
+        const dest = limit.slice(try io_w.writableSliceGreedy(1));
         var bufs: [1][]u8 = .{dest};
-        const n = try readVec(io_reader, &bufs);
-        io_writer.advance(n);
+        const n = try readVecImpl(io_r, &bufs);
+        io_w.advance(n);
         return n;
     }
 
-    pub fn pendingControlMessageType(self: *Reader) ?cmsg.SCM {
-        if (!self.control_used) return null;
-        const header = cmsg.bufferAsCmsghdr(self.control_buffer[0..].ptr);
-        return @enumFromInt(header.type);
+    // ── syscall ───────────────────────────────────────────────────────────────
+
+    fn doRecv(self: *Reader, data: [][]u8) Io.Reader.Error!usize {
+        if (!posixe.has_recvmsg) return self.doRecvFallback(data);
+
+        var iovecs: [8]posix.iovec = undefined;
+        var iov_n: usize = 0;
+        var data_size: usize = 0;
+        for (data) |buf| {
+            if (iov_n >= iovecs.len) break;
+            if (buf.len == 0) continue;
+            iovecs[iov_n] = .{ .base = buf.ptr, .len = buf.len };
+            iov_n += 1;
+            data_size += buf.len;
+        }
+        if (iov_n == 0) return error.ReadFailed;
+
+        var msghdr = posix.msghdr{
+            .name = null,
+            .namelen = 0,
+            .iov = @panic("Don't know what to do here!"),
+            .iovlen = iov_n,
+            .control = @ptrCast(&self.ctrl_buf),
+            .controllen = self.ctrl_buf.len,
+            .flags = 0,
+        };
+
+        const rc: isize = @bitCast(posixe.recvmsg(self.fd, &msghdr, 0));
+        if (rc < 0) return error.ReadFailed;
+        if (rc == 0) return error.EndOfStream;
+
+        self.ctrl_used = msghdr.controllen > 0;
+
+        const n: usize = @intCast(rc);
+        // If the kernel wrote into trailing buffer space, advance end pointer.
+        if (n > data_size) {
+            self.interface.end += n - data_size;
+            return data_size;
+        }
+        return n;
     }
 
-    pub fn takeFileDescriptors(self: *Reader, fds: []i32) !usize {
-        if (!self.control_used) return error.NoControlMessage;
-        const header = cmsg.bufferAsCmsghdr(self.control_buffer[0..].ptr);
-        const count = cmsg.getRightsLength(header) catch @panic("Header corrupted!");
-        if (fds.len < count) return error.BufferTooSmall;
-        try cmsg.getRights(header, fds[0..count]);
-        self.control_used = false;
+    fn doRecvFallback(self: *Reader, data: [][]u8) Io.Reader.Error!usize {
+        var iovecs: [8]posix.iovec = undefined;
+        var iov_n: usize = 0;
+        for (data) |buf| {
+            if (iov_n >= iovecs.len) break;
+            if (buf.len == 0) continue;
+            iovecs[iov_n] = .{ .base = buf.ptr, .len = buf.len };
+            iov_n += 1;
+        }
+        if (iov_n == 0) return error.ReadFailed;
+        const rc = posix.readv(self.fd, iovecs[0..iov_n]) catch
+            return error.ReadFailed;
+        if (rc == 0) return error.EndOfStream;
+        return rc;
+    }
+
+    // ── Ancillary data helpers ────────────────────────────────────────────────
+
+    pub fn pendingCmsgType(self: *const Reader) ?cmsg.SCM {
+        if (!self.ctrl_used) return null;
+        const hdr = cmsg.bufferAsCmsghdr(@ptrCast(@constCast(&self.ctrl_buf)));
+        return @enumFromInt(hdr.type);
+    }
+
+    pub fn takeFds(self: *Reader, out: []i32) !usize {
+        if (!self.ctrl_used) return error.NoPendingControl;
+        const hdr = cmsg.bufferAsCmsghdr(&self.ctrl_buf);
+        const count = try cmsg.getRightsLength(hdr);
+        if (out.len < count) return error.BufferTooSmall;
+        try cmsg.getRights(hdr, out[0..count]);
+        self.ctrl_used = false;
         return count;
     }
 
-    pub fn takeCredentials(self: *Reader) !cmsg.ucred {
-        if (!self.control_used) return error.NoControlMessage;
-        const header = cmsg.bufferAsCmsghdr(self.control_buffer[0..].ptr);
-        const cred = try cmsg.getCredentials(header);
-        self.control_used = false;
-        return cred;
-    }
+    pub fn discardCmsg(self: *Reader) void {
+        if (!self.ctrl_used) return;
+        defer self.ctrl_used = false;
 
-    pub fn takePidFD(self: *Reader) !i32 {
-        if (!self.control_used) return error.NoControlMessage;
-        const header = cmsg.bufferAsCmsghdr(self.control_buffer[0..].ptr);
-        const pidfd = try cmsg.getPidFD(header);
-        self.control_used = false;
-        return pidfd;
-    }
-
-    pub fn discardControlMessage(self: *Reader) void {
-        const cmsghdr = cmsg.bufferAsCmsghdr(self.control_buffer[0..].ptr);
-        switch (@as(cmsg.SCM, @enumFromInt(cmsghdr.type))) {
-            .RIGHTS => {
-                var fds: [100]i32 = undefined;
-                const count = cmsg.getRightsLength(cmsghdr) catch @panic("Header corrupted!");
-                if (count > fds.len) @panic("Too many file descriptors!");
-                cmsg.getRights(cmsghdr, fds[0..count]) catch return;
-                for (fds[0..count]) |fd| {
-                    posix.close(fd);
-                }
-            },
-            .PIDFD => {
-                const pidfd = cmsg.getPidFD(cmsghdr) catch return;
-                posix.close(pidfd);
-            },
-            else => {}
+        const hdr = cmsg.bufferAsCmsghdr(&self.ctrl_buf);
+        if (@as(cmsg.SCM, @enumFromInt(hdr.type)) == .RIGHTS) {
+            var fds: [128]i32 = undefined;
+            const n = cmsg.getRightsLength(hdr) catch return;
+            cmsg.getRights(hdr, fds[0..n]) catch return;
+            for (fds[0..n]) |fd| _ = std.os.linux.close(fd);
         }
-        self.control_used = false;
-    }
-
-    pub fn setPendingFlags(self: *Reader, flags: u32) void {
-        self.pending_flags = flags;
-    }
-
-    pub fn deinit(self: *Reader) void {
-        self.allocator.free(self.buffer);
     }
 };
 
-pub const Writer = struct {
-    handle: posix.fd_t,
-    buffer: Io.Writer.Allocating,
+// ─────────────────────────────────────────────────────────────────────────────
+//  Writer
+// ─────────────────────────────────────────────────────────────────────────────
 
+pub const Writer = struct {
+    fd: posix.fd_t,
+    allocator: mem.Allocator,
+    /// Accumulates bytes between drain calls; flushed via sendmsg.
+    acc: std.ArrayList(u8),
     interface: Io.Writer,
 
-    control_buffer: [512]u8 align(@alignOf(cmsg.cmsghdr)) = undefined,
-    control_pending_len: usize = 0,
-    pending_flags: u32 = 0,
+    ctrl_buf: [512]u8 align(@alignOf(cmsg.cmsghdr)) = undefined,
+    ctrl_len: usize = 0,
 
-    pub fn init(allocator: mem.Allocator, handle: posix.fd_t, buffer_size: usize) !Writer {
-        return Writer{
-            .handle = handle,
-            .buffer = try Io.Writer.Allocating.initCapacity(allocator, buffer_size),
+    pub fn init(allocator: mem.Allocator, fd: posix.fd_t, capacity: usize) !Writer {
+        return .{
+            .fd = fd,
+            .allocator = allocator,
+            .acc = try std.ArrayList(u8).initCapacity(allocator, capacity),
             .interface = .{
+                // buffer = &.{} → unbuffered: every Io.Writer.write call goes
+                // straight to drain (our acc ArrayList).
                 .buffer = &.{},
                 .end = 0,
                 .vtable = &.{
-                    .drain = drain,
-                    .flush = flush,
-                }
-            }
+                    .drain = drainImpl,
+                    .flush = flushImpl,
+                },
+            },
         };
     }
 
     pub fn deinit(self: *Writer) void {
-        self.buffer.deinit();
+        self.acc.deinit(self.allocator);
     }
 
-    pub fn drain(io_writer: *Io.Writer, data: []const []const u8, splat: usize) Io.Writer.Error!usize {
-        const w: *Writer = @alignCast(@fieldParentPtr("interface", io_writer));
-        const writer = &w.buffer.writer;
-        var n: usize = 0;
+    // ── Io.Writer vtable ──────────────────────────────────────────────────────
+
+    fn drainImpl(io_w: *Io.Writer, data: []const []const u8, splat: usize) Io.Writer.Error!usize {
+        const w: *Writer = @alignCast(@fieldParentPtr("interface", io_w));
+        var total: usize = 0;
         for (data, 0..) |buf, i| {
-            assert(buf.len > 0);
-            if (i == data.len - 1 and splat > 1) {
-                for (0..splat) | _ | {
-                    try writer.writeAll(buf);
-                    n += buf.len;
-                }
-            } else {
-                try writer.writeAll(buf);
-                n += buf.len;
+            // The last buffer is repeated `splat` times; all others appear once.
+            const reps: usize = if (i == data.len - 1 and splat > 1) splat else 1;
+            for (0..reps) |_| {
+                w.acc.appendSliceAssumeCapacity(buf);
+                total += buf.len;
             }
         }
-        return n;
+        return total;
     }
 
-    pub fn flush(io_writer: *Io.Writer) Io.Writer.Error!void {
-        const w: *Writer = @alignCast(@fieldParentPtr("interface", io_writer));
+    fn flushImpl(io_w: *Io.Writer) Io.Writer.Error!void {
+        const w: *Writer = @alignCast(@fieldParentPtr("interface", io_w));
+        const payload = w.acc.items;
+        if (payload.len == 0 and w.ctrl_len == 0) return;
 
-        const data: []const u8 = w.buffer.written();
-
-        const src: [1]posix.iovec_const = .{
-            .{
-                .base = data[0..].ptr,
-                .len = data.len,
-            }
+        const iov = [1]posix.iovec_const{
+            .{ .base = payload.ptr, .len = payload.len },
         };
-
-        var message_header: posix.msghdr_const = .{
+        const msghdr = posix.msghdr_const{
             .name = null,
             .namelen = 0,
-            .iov = src[0..].ptr,
+            .iov = &iov,
             .iovlen = 1,
-            .control = if (w.control_pending_len > 0) @ptrCast(w.control_buffer[0..].ptr) else null,
-            .controllen = w.control_pending_len,
-            .flags = 0
+            .control = if (w.ctrl_len > 0) @ptrCast(&w.ctrl_buf) else null,
+            .controllen = w.ctrl_len,
+            .flags = 0,
         };
 
-        // std.debug.print("Writer.flush: writing {d} bytes with {d} control bytes\nBuffer debug:\n", .{data.len, w.control_pending_len});
-        // for (data, 1..) |byte, i| {
-        //     std.debug.print("{x:0>2} ", .{byte});
-        //     if (i % 8 == 0) std.debug.print("\n", .{});
-        //     if (i % 64 == 0) std.debug.print("\n", .{});
-        // }
-        // std.debug.print("\n", .{});
+        if (std.os.linux.sendmsg(w.fd, &msghdr, 0) != 0) return error.WriteFailed;
 
-        _ = posix.sendmsg(w.handle, &message_header, w.pending_flags) catch return error.WriteFailed;
-
-        // Reinitialize the buffer
-
-        w.control_pending_len = 0;
-        w.pending_flags = 0;
-        return;
+        w.ctrl_len = 0;
+        w.acc.clearRetainingCapacity();
     }
 
-    pub fn putFDs(self: *Writer, fds: []const i32) !void {
-        var cmsg_allocator = std.heap.FixedBufferAllocator.init(&self.control_buffer);
-        _ = try cmsg.initRights(cmsg_allocator.allocator(), fds);
-        self.control_pending_len = cmsg_allocator.end_index;
+    /// Attach fds to the next flush as SCM_RIGHTS ancillary data.
+    pub fn attachFds(self: *Writer, fds: []const i32) !void {
+        var fba = std.heap.FixedBufferAllocator.init(&self.ctrl_buf);
+        _ = try cmsg.initRights(fba.allocator(), fds);
+        self.ctrl_len = fba.end_index;
     }
 };

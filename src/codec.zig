@@ -29,7 +29,7 @@ pub const Writer = struct {
     pub fn write(self: *Writer, in: anytype) !void {
         const T = @TypeOf(in);
         const tinfo = @typeInfo(T);
-        comptime if (!types.isTypeSerializable(T)) @compileError(comptimePrint("Unable to serialize value of type {s}, type doesn't supports dbus serialization", .{ @typeName(T) }));
+        comptime if (!types.isTypeSerializable(T)) @compileError(comptimePrint("Unable to serialize value of type {s}, type doesn't supports dbus serialization", .{@typeName(T)}));
         switch (T) {
             Signature => {
                 try self.w.writeByte(@truncate(in.value.len));
@@ -197,11 +197,7 @@ pub const Writer = struct {
         buffer: Io.Writer.Allocating,
 
         pub fn init(parent: *Writer, allocator: mem.Allocator, fdlist: ?*std.ArrayList(i32)) !Container {
-            var c: Container = .{
-                .parent = parent,
-                .buffer = try Io.Writer.Allocating.initCapacity(allocator, 256),
-                .writer = undefined
-            };
+            var c: Container = .{ .parent = parent, .buffer = try Io.Writer.Allocating.initCapacity(allocator, 256), .writer = undefined };
             c.writer = Writer.from(allocator, &c.buffer.writer, fdlist);
             c.writer.depth = parent.depth + 1;
             c.writer.endian = parent.endian;
@@ -260,7 +256,7 @@ pub const Reader = struct {
         const a = allocator orelse self.allocator;
         const tinfo = @typeInfo(T);
         if (comptime (T == void)) return {};
-        comptime if (!types.isTypeDeserializable(T)) @compileError(comptimePrint("Requested type {s} is not DBus-deserializable", .{ @typeName(T) }));
+        comptime if (!types.isTypeDeserializable(T)) @compileError(comptimePrint("Requested type {s} is not DBus-deserializable", .{@typeName(T)}));
         switch (T) {
             Signature => {
                 const siglen: u8 = try self.r.takeByte();
@@ -370,7 +366,7 @@ pub const Reader = struct {
                         var r = Reader.from(self.allocator, &container, self.fdlist, self.endian);
                         r.depth = self.depth + 1;
 
-                        var result = std.ArrayList(ptr.child){};
+                        var result = std.ArrayList(ptr.child).empty;
                         errdefer result.deinit(a);
 
                         var i: usize = 0;
@@ -494,18 +490,12 @@ pub const Reader = struct {
             parent.position += try alignBuffer(parent.r, 4, parent.position);
             const container_len: u32 = try parent.r.takeInt(u32, parent.endian);
             parent.position += 4;
-            parent.position += try alignBuffer(parent.r,  alignment, parent.position);
+            parent.position += try alignBuffer(parent.r, alignment, parent.position);
             const container_data: []u8 = try allocator.alloc(u8, container_len);
             errdefer allocator.free(container_data);
             try parent.r.readSliceAll(container_data);
             parent.position += container_len;
-            var c: Container = .{
-                .parent = parent,
-                .buffer = container_data,
-                .fixed = Io.Reader.fixed(container_data),
-                .allocator = allocator,
-                .reader = undefined
-            };
+            var c: Container = .{ .parent = parent, .buffer = container_data, .fixed = Io.Reader.fixed(container_data), .allocator = allocator, .reader = undefined };
             c.reader = Reader.from(allocator, &c.fixed, fdlist, byteorder);
             c.reader.depth = parent.depth + 1;
             return c;

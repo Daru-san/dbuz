@@ -1,4 +1,3 @@
-
 const std = @import("std");
 
 pub fn comptimeKey(comptime key: []const u8) []const []const u8 {
@@ -80,13 +79,9 @@ pub fn Tree(comptime Value: type) type {
             }
         };
 
-        pub const empty: Self = .{
-            .root = .{
-                .branch = .{
-                    .branches = .empty,
-                }
-            }
-        };
+        pub const empty: Self = .{ .root = .{ .branch = .{
+            .branches = .empty,
+        } } };
 
         root: Branch.Node,
 
@@ -106,7 +101,7 @@ pub fn Tree(comptime Value: type) type {
 
         pub fn insert(self: *Self, gpa: std.mem.Allocator, key: []const []const u8, value: V) !void {
             var branch = &self.root.branch;
-            for (key[0..key.len - 1]) |k| {
+            for (key[0 .. key.len - 1]) |k| {
                 const node = branch.branches.getPtr(k);
                 if (node) |c| switch (c.*) {
                     .leaf => return error.KeyConflict,
@@ -115,12 +110,10 @@ pub fn Tree(comptime Value: type) type {
                     },
                 } else {
                     const new_node = try branch.branches.getOrPut(gpa, k);
-                    if (!new_node.found_existing) { 
-                        new_node.value_ptr.* = .{
-                            .branch = .{
-                                .branches = .empty,
-                            }
-                        };
+                    if (!new_node.found_existing) {
+                        new_node.value_ptr.* = .{ .branch = .{
+                            .branches = .empty,
+                        } };
                         new_node.key_ptr.* = try gpa.dupe(u8, k);
                         branch = &(new_node.value_ptr.branch);
                     } else return error.KeyConflict;
@@ -134,13 +127,13 @@ pub fn Tree(comptime Value: type) type {
 
         pub fn remove(self: *Self, gpa: std.mem.Allocator, key: []const []const u8) bool {
             var branch = &self.root.branch;
-            for (key[0..key.len - 1]) |k| {
+            for (key[0 .. key.len - 1]) |k| {
                 const node = branch.branches.getPtr(k);
                 if (node) |c| switch (c.*) {
                     .leaf => return false,
                     .branch => {
                         branch = &c.branch;
-                    }
+                    },
                 } else {
                     return false;
                 }

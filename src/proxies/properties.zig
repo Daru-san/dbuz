@@ -1,4 +1,3 @@
-
 pub fn Properties(comptime PropertiesStorage: type, comptime TypeUnion: type, comptime TypeEnum: type) type {
     const props_info = @typeInfo(PropertiesStorage).@"struct";
     return struct {
@@ -8,14 +7,7 @@ pub fn Properties(comptime PropertiesStorage: type, comptime TypeUnion: type, co
         const PropertiesEnum = TypeEnum;
         const Storage = PropertiesStorage;
         const Signals = struct {
-            pub const PropertiesChanged = Signal(
-                struct {
-                    String,
-                    Dict(String, PropertiesUnion),
-                    []String
-                },
-                .{}
-            );
+            pub const PropertiesChanged = Signal(struct { String, Dict(String, PropertiesUnion), []String }, .{});
         };
 
         interface: Proxy = .{
@@ -63,7 +55,7 @@ pub fn Properties(comptime PropertiesStorage: type, comptime TypeUnion: type, co
                 .{
                     .interface = "org.freedesktop.DBus.Properties",
                     .path = object_path,
-                    .args = &.{ interface },
+                    .args = &.{interface},
                     .sender = remote,
                 },
                 &unique_id,
@@ -76,10 +68,10 @@ pub fn Properties(comptime PropertiesStorage: type, comptime TypeUnion: type, co
 
             get_all_call.type = .method_call;
             _ = get_all_call.setDestination(remote)
-                        .setInterface("org.freedesktop.DBus.Properties")
-                        .setPath(object_path)
-                        .setMember("GetAll")
-                        .setSignature("s");
+                .setInterface("org.freedesktop.DBus.Properties")
+                .setPath(object_path)
+                .setMember("GetAll")
+                .setSignature("s");
 
             var w = get_all_call.writer();
             try w.write(String{ .value = interface });
@@ -91,21 +83,11 @@ pub fn Properties(comptime PropertiesStorage: type, comptime TypeUnion: type, co
             try c.sendMessage(&get_all_call);
         }
 
-        fn get_all_cb(
-            _: *Promise(Dict(String, PropertiesUnion), DBusError),
-            value: DBusError!Dict(String, PropertiesUnion),
-            _: ?*std.heap.ArenaAllocator,
-            userdata: ?*anyopaque
-        ) void {
-            const s: *Self = @alignCast(@ptrCast(userdata));
+        fn get_all_cb(_: *Promise(Dict(String, PropertiesUnion), DBusError), value: DBusError!Dict(String, PropertiesUnion), _: ?*std.heap.ArenaAllocator, userdata: ?*anyopaque) void {
+            const s: *Self = @ptrCast(@alignCast(userdata));
 
             const response = value catch |err| {
-                logger.err("Properties(remote:{s}, interface:{s}, path:{s}).GetAll returned error: {s}", .{
-                    s.remote,
-                    s.name,
-                    s.path,
-                    @errorName(err)
-                });
+                logger.err("Properties(remote:{s}, interface:{s}, path:{s}).GetAll returned error: {s}", .{ s.remote, s.name, s.path, @errorName(err) });
                 return;
             };
 
@@ -115,12 +97,11 @@ pub fn Properties(comptime PropertiesStorage: type, comptime TypeUnion: type, co
             var it = response.iterator();
             dict_loop: while (it.next()) |kv| {
                 field_loop: inline for (props_info.fields) |field| {
-
                     const typesig = comptime guessSignature(field.type);
 
                     if (comptime std.mem.startsWith(u8, field.name, "_")) comptime continue :field_loop;
                     if (!std.mem.eql(u8, field.name, kv.key_ptr.value)) comptime continue :field_loop;
-                    logger.warn("Setting field {s}:{s}", .{kv.key_ptr.value, field.name});
+                    logger.warn("Setting field {s}:{s}", .{ kv.key_ptr.value, field.name });
                     @field(s.properties.*, field.name) = dupeValue(s.allocator, @field(kv.value_ptr.*, typesig)) catch |err| {
                         std.debug.print("{s} at Properties proxy, attached to remote:{s}, interface:{s}, path:{s}", .{
                             @errorName(err),
@@ -135,11 +116,7 @@ pub fn Properties(comptime PropertiesStorage: type, comptime TypeUnion: type, co
             s.properties._inited = true;
         }
 
-        pub fn set(
-            s: *Self,
-            comptime property: PropertiesEnum,
-            v: anytype
-        ) !void {
+        pub fn set(s: *Self, comptime property: PropertiesEnum, v: anytype) !void {
             var m = try s.interface.connection.?.startMessage(s.allocator);
             defer m.deinit();
 
@@ -150,23 +127,19 @@ pub fn Properties(comptime PropertiesStorage: type, comptime TypeUnion: type, co
 
             m.type = .method_call;
             _ = m.setDestination(s.remote)
-             .setInterface("org.freedesktop.DBus.Properties")
-             .setPath(s.path)
-             .setMember("Set")
-             .setSignature("ssv");
+                .setInterface("org.freedesktop.DBus.Properties")
+                .setPath(s.path)
+                .setMember("Set")
+                .setSignature("ssv");
 
             const w = m.writer();
-            try w.write(.{
-                String{ .value = s.name },
-                String{ .value = @tagName(property) },
-                v
-            });
+            try w.write(.{ String{ .value = s.name }, String{ .value = @tagName(property) }, v });
 
             try s.interface.connection.?.sendMessage(&m);
         }
 
         fn properties_changed(interface_name: String, changed: Dict(String, PropertiesUnion), _: []String, userdata: ?*anyopaque) void {
-            const s: *Self = @alignCast(@ptrCast(userdata));
+            const s: *Self = @ptrCast(@alignCast(userdata));
 
             if (!std.mem.eql(u8, s.name, interface_name.value)) return;
 
@@ -191,25 +164,24 @@ pub fn Properties(comptime PropertiesStorage: type, comptime TypeUnion: type, co
     };
 }
 
-
 const std = @import("std");
-const dbuz = @import("../dbuz.zig");
+const zbus = @import("../zbus.zig");
 
 const dupeValue = @import("../types/dbus_types.zig").dupeValue;
 const deinitValue = @import("../types/dbus_types.zig").deinitValueRecursive;
 const guessSignature = @import("../types/dbus_types.zig").guessSignature;
 
-const String = dbuz.types.String;
+const String = zbus.types.String;
 
-const Proxy = dbuz.types.Proxy;
-const Message = dbuz.types.Message;
-const Connection = dbuz.types.Connection;
+const Proxy = zbus.types.Proxy;
+const Message = zbus.types.Message;
+const Connection = zbus.types.Connection;
 
-const Signal = dbuz.types.Signal;
-const SignalManager = dbuz.types.SignalManager;
-const Dict = dbuz.types.Dict;
+const Signal = zbus.types.Signal;
+const SignalManager = zbus.types.SignalManager;
+const Dict = zbus.types.Dict;
 
-const Promise = dbuz.types.Promise;
-const DBusError = dbuz.types.DBusError;
+const Promise = zbus.types.Promise;
+const DBusError = zbus.types.DBusError;
 
 const logger = std.log.scoped(.Properties);

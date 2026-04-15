@@ -1,13 +1,12 @@
-
 const std = @import("std");
+const Io = std.Io;
 const mem = std.mem;
 const posix = std.posix;
 const atomic = std.atomic;
 
 const Thread = std.Thread;
 
-const dbuz = @import("../dbuz.zig");
-const Message = dbuz.types.Message;
+const Message = @import("Message.zig");
 
 const isTypeSerializable = @import("dbus_types.zig").isTypeSerializable;
 const isTypeDeserializable = @import("dbus_types.zig").isTypeDeserializable;
@@ -79,21 +78,21 @@ pub fn Promise(comptime T: type, comptime E: type) type {
     return struct {
         pub const Type = T;
         pub const Error = E;
-        pub const Callback = *const fn (promise: *Self, result: Error!Type, arena: ?*std.heap.ArenaAllocator, userdata: ?*anyopaque) void;
+        pub const Callback = *const fn (promise: *Self, io: Io, result: Error!Type, arena: ?*std.heap.ArenaAllocator, userdata: ?*anyopaque) void;
 
         const Self = @This();
 
         state: State = .Pending,
 
-        condition: Thread.Condition = .{},
-        mutex: Thread.Mutex = .{},
+        condition: Io.Condition = .init,
+        mutex: Io.Mutex = .init,
 
-        result_value:   ?Error!Type = null,
-        result_arena:   ?*std.heap.ArenaAllocator = null,
+        result_value: ?Error!Type = null,
+        result_arena: ?*std.heap.ArenaAllocator = null,
         result_message: ?Message = null,
 
         callback: ?Callback = null,
-        capture:   ?*anyopaque = null,
+        capture: ?*anyopaque = null,
 
         refcounter: atomic.Value(isize) = .init(0),
 
@@ -140,8 +139,8 @@ pub fn Promise(comptime T: type, comptime E: type) type {
         }
 
         /// Destroys promise, including underlying message.
-        pub fn destroy(p: *@This()) void {
-            p.mutex.lock();
+        pub fn destroy(p: *@This(), io: Io) void {
+            p.mutex.lockUncancelable(io);
             switch (p.state) {
                 .Completed => {
                     // Usually deinitializing arena is enough, but in case with file descriptors we need to close them manually.
@@ -154,29 +153,29 @@ pub fn Promise(comptime T: type, comptime E: type) type {
                 else => {},
             }
             p.state = .Invalid;
-            p.mutex.unlock();
+            p.mutex.unlock(io);
             p.allocator.destroy(p);
         }
 
-        fn vtable_destroy(po: *PromiseOpaque) void {
-            return @as(*@This(), @fieldParentPtr("interface", po)).destroy();
+        fn vtable_destroy(po: *PromiseOpaque, io: Io) void {
+            return @as(*@This(), @fieldParentPtr("interface", po)).destroy(io);
         }
 
         /// Blocks calling thread until reply arrives for timeout_ns nanoseconds (orelse for 90 seconds).
         /// On success, returns tuple of Promise(T).Value, *ArenaAllocator, else error. ArenaAllocator is allocator of T, if T requires allocation.
         /// Callbacks are guaranteed to fire before this method exits.
-        /// 
+        ///
         /// NOTE: NEVER CALL THIS METHOD FROM INSIDE OF ANOTHER PROMISE'S CALLBACK. THIS WILL CAUSE DEADLOCK.
-        pub fn wait(p: *@This(), timeout_ns: ?u64) !struct {Error!Type, *std.heap.ArenaAllocator} {
-            p.mutex.lock();
-            defer p.mutex.unlock();
+        pub fn wait(p: *@This(), io: Io) !struct { Error!Type, *std.heap.ArenaAllocator } {
+            p.mutex.lockUncancelable(io);
+            defer p.mutex.unlock(io);
             state: switch (p.state) {
                 .Completed => {
                     if (p.result_value == null) return error.TimedOut;
-                    return .{p.result_value.?, p.result_arena.?};
+                    return .{ p.result_value.?, p.result_arena.? };
                 },
                 .Pending => {
-                    try p.condition.timedWait(&p.mutex, timeout_ns orelse 90 * std.time.ns_per_s);
+                    try p.condition.wait(io, &p.mutex);
                     continue :state p.state;
                 },
                 .Invalid => unreachable,
@@ -185,11 +184,11 @@ pub fn Promise(comptime T: type, comptime E: type) type {
         }
 
         /// Takes ownership of message and arena.
-        pub fn received(po: *PromiseOpaque, message: Message, arena: *std.heap.ArenaAllocator) void {
+        pub fn received(po: *PromiseOpaque, io: Io, message: Message, arena: *std.heap.ArenaAllocator) void {
             const p: *@This() = @fieldParentPtr("interface", po);
 
-            p.mutex.lock();
-            defer p.mutex.unlock();
+            p.mutex.lockUncancelable(io);
+            defer p.mutex.unlock(io);
 
             if (p.state != .Pending) @panic("Message received on non-pending promise! Connection or promise is corrupted.");
             p.result_arena = arena;
@@ -199,78 +198,76 @@ pub fn Promise(comptime T: type, comptime E: type) type {
                 .method_response => r: {
                     const message_reader = p.result_message.?.reader() catch break :r Error.OutOfMemory;
                     const values = message_reader.read(T, arena.allocator()) catch break :r error.Failed;
-                    break :r values; 
+                    break :r values;
                 },
                 else => unreachable,
             };
 
-            if (p.callback) |cb| 
-                cb(p, p.result_value.?, p.result_arena, p.capture);
+            if (p.callback) |cb|
+                cb(p, io, p.result_value.?, p.result_arena, p.capture);
 
             p.state = .Completed;
-            p.condition.broadcast();
+            p.condition.broadcast(io);
         }
 
-        pub fn errored(po: *PromiseOpaque, err: DBusError) void {
+        pub fn errored(po: *PromiseOpaque, io: Io, err: DBusError) void {
             const p: *@This() = @fieldParentPtr("interface", po);
 
-            p.mutex.lock();
-            defer p.mutex.unlock();
-            
+            p.mutex.lockUncancelable(io);
+            defer p.mutex.unlock(io);
+
             switch (p.state) {
                 .Pending => {
                     p.result_value = err;
                     p.state = .Completed;
-                    p.condition.broadcast();
+                    p.condition.broadcast(io);
                 },
                 .Completed => {},
                 .Invalid => unreachable,
             }
         }
 
-        pub fn timedout(po: *PromiseOpaque) void {
-
+        pub fn timedout(po: *PromiseOpaque, io: Io) void {
             const p: *Self = @fieldParentPtr("interface", po);
 
-            p.mutex.lock();
-            defer p.mutex.unlock();
+            p.mutex.lockUncancelable(io);
+            defer p.mutex.unlock(io);
 
             if (p.state != .Pending) @panic("Timeout received on non-pending promise! Connection or promise is corrupted.");
             p.state = .Completed;
 
             if (p.callback) |cb|
-                cb(p, error.TimedOut, null, p.capture);
+                cb(p, io, error.TimedOut, null, p.capture);
 
-            p.condition.broadcast();
+            p.condition.broadcast(io);
         }
 
-        /// Sets up callbacks for promise. If promise is completed, calls callback immediately 
-        pub fn setupCallback(p: *Self, cb: Callback, userdata: ?*anyopaque) void {
-            p.mutex.lock();
-            defer p.mutex.unlock();
+        /// Sets up callbacks for promise. If promise is completed, calls callback immediately
+        pub fn setupCallback(p: *Self, io: Io, cb: Callback, userdata: ?*anyopaque) void {
+            p.mutex.lockUncancelable(io);
+            defer p.mutex.unlock(io);
 
             p.callback = cb;
             p.capture = userdata;
 
             switch (p.state) {
                 .Invalid => unreachable,
-                .Completed => cb(p, p.result_value.?, p.result_arena, p.capture),
+                .Completed => cb(p, io, p.result_value.?, p.result_arena, p.capture),
                 .Pending => {},
             }
         }
-
     };
 }
 
 pub const PromiseOpaque = struct {
     pub const VTable = struct {
-        received: *const fn (po: *PromiseOpaque, m: Message, arena: *std.heap.ArenaAllocator) void,
-        errored:  *const fn (po: *PromiseOpaque, err: DBusError) void,
-        timedout: *const fn (po: *PromiseOpaque) void,
+        received: *const fn (po: *PromiseOpaque, io: Io, m: Message, arena: *std.heap.ArenaAllocator) void,
+        errored: *const fn (po: *PromiseOpaque, io: Io, err: DBusError) void,
+        timedout: *const fn (po: *PromiseOpaque, io: Io) void,
 
         reference: *const fn (po: *PromiseOpaque) *PromiseOpaque,
         release: *const fn (po: *PromiseOpaque) isize,
-        destroy: *const fn (po: *PromiseOpaque) void,
+        destroy: *const fn (po: *PromiseOpaque, io: Io) void,
     };
 
     vtable: *const VTable,

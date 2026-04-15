@@ -1,17 +1,14 @@
-
 const Proxy = @This();
 
 const std = @import("std");
 const mem = std.mem;
 const atomic = std.atomic;
 
-const dbuz = @import("../dbuz.zig");
 const types = @import("dbus_types.zig");
+const Connection = @import("../Connection.zig");
+const Message = @import("Message.zig");
 
-const Connection = dbuz.types.Connection;
-const Message = dbuz.types.Message;
-
-pub const Error = error{OutOfMemory, HandlingFailed};
+pub const Error = error{ OutOfMemory, HandlingFailed };
 
 pub const VTable = struct {
     handle_signal: *const fn (p: *Proxy, m: *Message, gpa: mem.Allocator) Error!void,
