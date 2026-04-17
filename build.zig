@@ -124,7 +124,7 @@ pub const ProxyScanner = struct {
             .b = b,
             .zbus_mod = zbus_dep.module("zbus"),
             .scanner_exe = zbus_dep.artifact("zbus-proxy-scanner"),
-            .proxies = std.ArrayList(Entry).init(b.allocator),
+            .proxies = std.ArrayList(Entry).empty,
         };
         return self;
     }
@@ -179,7 +179,7 @@ pub const ProxyScanner = struct {
         if (self.native_types_mod) |ntm|
             mod.addImport(self.native_types_mod_name.?, ntm);
 
-        self.proxies.append(.{ .spec = spec, .module = mod }) catch @panic("OOM");
+        self.proxies.append(b.allocator, .{ .spec = spec, .module = mod }) catch @panic("OOM");
     }
 
     /// Returns a synthetic module that re-exports every generated proxy under
@@ -191,8 +191,9 @@ pub const ProxyScanner = struct {
     pub fn generate(self: *ProxyScanner) *Build.Module {
         const b = self.b;
 
-        var source = std.ArrayList(u8).init(b.allocator);
-        const w = source.writer(b.allocator);
+        var source = std.ArrayList(u8).empty;
+        source.ensureTotalCapacity(b.allocator, self.proxies.items.len) catch @panic("OOM");
+        var w = std.Io.Writer.fromArrayList(&source);
 
         for (self.proxies.items) |entry| {
             const out_name = entry.spec.output_name orelse blk: {
@@ -221,7 +222,7 @@ pub const ProxyScanner = struct {
             mod.addImport(out_name, entry.module);
         }
 
-        self.proxies.deinit();
+        self.proxies.deinit(b.allocator);
         return mod;
     }
 };
