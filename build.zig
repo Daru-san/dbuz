@@ -193,7 +193,8 @@ pub const ProxyScanner = struct {
 
         var source = std.ArrayList(u8).empty;
         source.ensureTotalCapacity(b.allocator, self.proxies.items.len) catch @panic("OOM");
-        var w = std.Io.Writer.fromArrayList(&source);
+        var writer = std.Io.Writer.Allocating.fromArrayList(b.allocator, &source);
+        var w = &writer.writer;
 
         for (self.proxies.items) |entry| {
             const out_name = entry.spec.output_name orelse blk: {
